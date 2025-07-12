@@ -1,0 +1,10 @@
+python-dotenv~=1.0.1
+aiogram~=3.17.0
+SQLAlchemy~=2.0.37
+openai~=1.59.6
+pillow~=11.1.0
+aiohttp~=3.11.18
+aiogram_media_group
+agents
+asyncpg
+greenlet

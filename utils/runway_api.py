@@ -1,4 +1,5 @@
 import asyncio
+import math
 import os
 import base64
 from typing import Sequence, Optional
@@ -37,23 +38,34 @@ def prepare_ref(raw: bytes) -> bytes:
     # ограничение максимального разрешения
     if max(w, h) > MAX_SIDE:
         scale = MAX_SIDE / max(w, h)
-        img = img.resize((int(w*scale), int(h*scale)), Image.LANCZOS)
-        w, h = img.size
-        ar   = w / h
+        img   = img.resize((int(w*scale), int(h*scale)), Image.LANCZOS)
+        w, h  = img.size
+        ar    = w / h
 
-    # паддинг до MIN_AR
-    if ar < MIN_AR:
-        new_w = int(h * MIN_AR)
-        pad   = (new_w - w) // 2
-        img   = ImageOps.expand(img, (pad, 0, new_w - w - pad, 0), fill=(0, 0, 0))
+    # паддинг до MIN_AR (строго > MIN_AR)
+    if ar <= MIN_AR:
+        # new_width > h * MIN_AR
+        new_w = math.floor(h * MIN_AR) + 1
+        total_pad = new_w - w
+        pad_left  = total_pad // 2
+        pad_right = total_pad - pad_left
+        img = ImageOps.expand(img, (pad_left, 0, pad_right, 0), fill=(0,0,0))
 
-    # паддинг до MAX_AR
-    elif ar > MAX_AR:
-        new_h = int(w / MAX_AR)
-        pad   = (new_h - h) // 2
-        img   = ImageOps.expand(img, (0, pad, 0, new_h - h - pad), fill=(0, 0, 0))
+    # паддинг до MAX_AR (строго < MAX_AR)
+    elif ar >= MAX_AR:
+        # new_height > w / MAX_AR
+        new_h = math.floor(w / MAX_AR) + 1
+        total_pad = new_h - h
+        pad_top    = total_pad // 2
+        pad_bottom = total_pad - pad_top
+        img = ImageOps.expand(img, (0, pad_top, 0, pad_bottom), fill=(0,0,0))
 
-    # сохранение в JPEG ≤ 95 качества, чтобы уложиться в 5 МБ Data-URI-лимита
+    # проверяем, что соотношение теперь в допустимом «открытом» промежутке
+    w2, h2 = img.size
+    ar2    = w2 / h2
+    assert MIN_AR < ar2 < MAX_AR, f"AR всё ещё вне диапазона: {ar2:.3f}"
+
+    # сохраняем в JPEG ≤95 качества
     buf = BytesIO()
     img.save(buf, format="JPEG", quality=95)
     return buf.getvalue()

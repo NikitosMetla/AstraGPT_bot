@@ -96,9 +96,26 @@ def split_telegram_html(text: str, limit: int = 4096) -> list[str]:
             if cut == -1:
                 cut = limit
 
-        parts.append(text[:cut])
-        text = text[cut:]
-    parts.append(text)
+        # Проверяем, если мы разрезали код внутри тега
+        if start != -1 and start < cut:
+            # Разбираем код на два фрагмента с добавлением тегов
+            part1 = text[:cut]
+            part2 = text[cut:]
+            # Если часть кода была разрезана, добавляем теги
+            if open_tag in part1 and close_tag not in part1:
+                part1 = part1 + close_tag
+            if open_tag in part2 and close_tag not in part2:
+                part2 = open_tag + part2
+            parts.append(part1)
+            text = part2
+        else:
+            parts.append(text[:cut])
+            text = text[cut:]
+
+    # Добавляем оставшуюся часть
+    if text:
+        parts.append(text)
+
     return parts
 
 

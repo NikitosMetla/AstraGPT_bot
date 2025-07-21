@@ -1,4 +1,5 @@
 import io
+import pprint
 import traceback
 
 from aiogram import Router, F, Bot, types
@@ -182,6 +183,8 @@ async def standard_message_handler(message: Message, bot: Bot):
 
     # print(ai_answer)
     ai_answer = sanitize_with_links(ai_answer)
+    # pprint.pprint(ai_answer)
+    print(ai_answer)
     await ai_requests_repository.add_request(user_id=user.user_id,
                                              answer_ai=ai_answer if ai_answer is not None and ai_answer != "" else "Выдал файл или фото",
                                              user_question=text,

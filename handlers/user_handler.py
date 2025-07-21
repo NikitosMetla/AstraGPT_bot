@@ -193,7 +193,10 @@ async def standard_message_handler(message: Message, bot: Bot):
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
     from aiogram.enums import ParseMode
     if len(images) == 0:
-        for chunk in split_telegram_html(ai_answer):
+        split_messages = split_telegram_html(ai_answer)
+        print("\n\n")
+        pprint.pprint(split_messages)
+        for chunk in split_messages:
             await message.reply(
                 chunk,
                 disable_web_page_preview=True,

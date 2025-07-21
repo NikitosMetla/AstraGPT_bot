@@ -74,47 +74,64 @@ def sanitize_html(text: str) -> str:
 # ---------------------------------------------------------------------
 # utils/parse_gpt_text.py
 
-def split_telegram_html(text: str, limit: int = 4096) -> list[str]:
-    parts = []
-    open_tag = "<pre><code"
-    close_tag = "</code></pre>"
+import re
+from typing import List
 
-    while len(text) > limit:
-        # ищем ближайший перед лимитом открывающий тэг
-        start = text.rfind(open_tag, 0, limit)
-        if start != -1:
-            # если открытие есть, пробуем найти закрывающий тэг после лимита
-            end = text.find(close_tag, limit)
-            if end != -1:
-                cut = end + len(close_tag)
-            else:
-                # если закрывающего тега нет — обрубаем по лимиту
-                cut = limit
-        else:
-            # обычный перенос по последнему переносу строки
-            cut = text.rfind("\n", 0, limit)
-            if cut == -1:
-                cut = limit
+def split_telegram_html(text: str, limit: int = 4096) -> List[str]:
+    # Разбиваем текст на кодовые блоки и всё остальное
+    pattern = re.compile(r'(<pre><code.*?>.*?</code></pre>)', re.DOTALL)
+    segments = pattern.split(text)
 
-        # Проверяем, если мы разрезали код внутри тега
-        if start != -1 and start < cut:
-            # Разбираем код на два фрагмента с добавлением тегов
-            part1 = text[:cut]
-            part2 = text[cut:]
-            # Если часть кода была разрезана, добавляем теги
-            if open_tag in part1 and close_tag not in part1:
-                part1 = part1 + close_tag
-            if open_tag in part2 and close_tag not in part2:
-                part2 = open_tag + part2
-            parts.append(part1)
-            text = part2
-        else:
-            parts.append(text[:cut])
-            text = text[cut:]
+    parts: List[str] = []
+    current = ""
 
-    # Добавляем оставшуюся часть
-    if text:
-        parts.append(text)
+    for seg in segments:
+        if not seg:
+            continue
+
+        # Если сегмент помещается целиком — просто добавляем
+        if len(current) + len(seg) <= limit:
+            current += seg
+            continue
+
+        # Если сегмент не помещается вместе с current, сбрасываем current
+        if current:
+            parts.append(current)
+            current = ""
+
+        # Если сам сегмент короче лимита — переносим его в current
+        if len(seg) <= limit:
+            current = seg
+            continue
+
+        # А тут сегмент длиннее лимита — разбиваем его отдельно
+        if seg.startswith("<pre><code"):
+            # Выделяем теги и содержимое
+            m = re.match(r'(<pre><code.*?>)(.*?)(</code></pre>)$', seg, re.DOTALL)
+            if m:
+                open_tag, code_body, close_tag = m.groups()
+                lines = code_body.splitlines(keepends=True)
+                chunk = ""
+                for line in lines:
+                    # Если добавление очередной строки превысит лимит — сбрасываем текущий chunk
+                    if len(open_tag) + len(chunk) + len(line) + len(close_tag) > limit:
+                        parts.append(open_tag + chunk + close_tag)
+                        chunk = ""
+                    chunk += line
+                if chunk:
+                    parts.append(open_tag + chunk + close_tag)
+                continue
+
+        # Немалый не‑кодовый сегмент: режем по символам
+        start = 0
+        while start < len(seg):
+            end = start + limit
+            parts.append(seg[start:end])
+            start = end
+
+    # Оставшийся current
+    if current:
+        parts.append(current)
 
     return parts
 

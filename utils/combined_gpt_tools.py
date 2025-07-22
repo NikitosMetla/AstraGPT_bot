@@ -25,6 +25,7 @@ from openai import (
 from settings import get_current_datetime_string, print_log
 from utils import web_search_agent
 from utils.create_notification import schedule_notification, NotificationSchedulerError
+from utils.parse_gpt_text import sanitize_with_links
 from utils.runway_api import generate_image_bytes
 
 # combined_gpt_tools.py
@@ -308,13 +309,14 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
             # print(document_bytes)
             if not any([text, image_bytes, document_bytes, audio_bytes]):
                 return None
-
+            print(text)
             content, attachments, file_ids = await self._build_content(
                 text,
                 image_bytes=image_bytes,
                 document_bytes=document_bytes,
                 audio_bytes=audio_bytes,
             )
+            print(content)
             if file_ids:
                 await self._sync_vector_store(thread.id, file_ids)
             # print(attachments)
@@ -358,8 +360,8 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                     try:
                         result = await process_assistant_run(self.client, run, thread.id, user_id=user.user_id)
                         result_images = result.get("final_images")
-                        web_answer = result.get("web_answer")
-                        notification = result.get("notif_answer")
+                        web_answer: str = result.get("web_answer")
+                        notification: str = result.get("notif_answer")
                         if len(result_images) == 0 and web_answer is None and notification is None:
                             try:
                                 await delete_message.delete()
@@ -373,9 +375,9 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                         await delete_message.delete()
                         first_msg = messages.data[0]
                         if web_answer:
-                            return web_answer
+                            return sanitize_with_links(web_answer)
                         if notification:
-                            return notification
+                            return sanitize_with_links(notification)
                         elif len(result_images) != 0:
                             return {"text": first_msg.content[0].text.value if hasattr(first_msg.content[0], "text") else "Сгенерировал изображение",
                                     "images": result_images}
@@ -418,8 +420,8 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                     message_text = messages.data[0].content[0].text.value
                     if with_audio_transcription:
                         audio_data = await self.generate_audio_by_text(message_text)
-                        return message_text, audio_data
-                    return message_text
+                        return sanitize_with_links(message_text), audio_data
+                    return sanitize_with_links(message_text)
                 # print(run.json)
                 print(run.json)
                 return ("Произошла непредвиденная ошибка, попробуй еще раз! Твой запрос может содержать"
@@ -646,6 +648,7 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int) -> Any:
     if name == "add_notification":
         print("\n\nadd_notification\n\n")
         when_send_str, text_notification = args.get("when_send_str"), args.get("text_notification")
+        print(args)
         print("Дата отправки:", when_send_str)
         try:
             await schedule_notification(user_id=user.user_id,
@@ -653,6 +656,7 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int) -> Any:
                                         text_notification=text_notification)
             return f"Отлично, добавили уведомление на {when_send_str} по московскому времени\n\nТекст уведомления: {text_notification}"
         except NotificationSchedulerError:
+            print(traceback.format_exc())
             return "Нельзя запланировать уведомление на прошлое время или неверный формат даты/времени"
     if name == "search_web":
         print("\n\nsearch_web\n\n")

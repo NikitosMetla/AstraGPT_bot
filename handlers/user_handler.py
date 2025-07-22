@@ -182,7 +182,7 @@ async def standard_message_handler(message: Message, bot: Bot):
         ai_answer = ai_answer.get("text")
 
     # print(ai_answer)
-    ai_answer = sanitize_with_links(ai_answer)
+    # ai_answer = sanitize_with_links(ai_answer)
     # pprint.pprint(ai_answer)
     print(ai_answer)
     await ai_requests_repository.add_request(user_id=user.user_id,
@@ -263,7 +263,7 @@ async def handle_photo_album(messages: list[types.Message], bot: Bot):
     elif type(ai_answer) == dict:
         images = ai_answer.get("images")
         ai_answer = ai_answer.get("text")
-    ai_answer = sanitize_with_links(ai_answer)
+    # ai_answer = sanitize_with_links(ai_answer)
     from aiogram.enums import ParseMode
     if len(images) == 0:
         for chunk in split_telegram_html(ai_answer):
@@ -334,7 +334,7 @@ async def standard_message_photo_handler(message: Message, bot: Bot):
     elif type(ai_answer) == dict:
         images = ai_answer.get("images")
         ai_answer = ai_answer.get("text")
-    ai_answer = sanitize_with_links(ai_answer)
+    # ai_answer = sanitize_with_links(ai_answer)
     from aiogram.enums import ParseMode
     if len(images) == 0:
         for chunk in split_telegram_html(ai_answer):
@@ -400,7 +400,7 @@ async def standard_message_voice_handler(message: Message, bot: Bot):
     elif type(ai_answer) == dict:
         images = ai_answer.get("images")
         ai_answer = ai_answer.get("text")
-    ai_answer = sanitize_with_links(ai_answer)
+    # ai_answer = sanitize_with_links(ai_answer)
     from aiogram.enums import ParseMode
     if len(images) == 0:
         for chunk in split_telegram_html(ai_answer):
@@ -485,7 +485,7 @@ async def handle_document_album(messages: list[types.Message], bot: Bot):
         images = ai_answer.get("images")
         ai_answer = ai_answer.get("text")
     # print(ai_answer)
-    ai_answer = sanitize_with_links(ai_answer)
+    # ai_answer = sanitize_with_links(ai_answer)
     from aiogram.enums import ParseMode
     if len(images) == 0:
         for chunk in split_telegram_html(ai_answer):
@@ -569,7 +569,7 @@ async def standard_message_document_handler(message: Message, bot: Bot):
             images = ai_answer.get("images")
             ai_answer = ai_answer.get("text")
         # print(ai_answer)
-        ai_answer = sanitize_with_links(ai_answer)
+        # ai_answer = sanitize_with_links(ai_answer)
         from aiogram.enums import ParseMode
         if len(images) == 0:
             for chunk in split_telegram_html(ai_answer):

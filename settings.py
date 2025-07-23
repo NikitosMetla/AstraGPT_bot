@@ -27,7 +27,7 @@ photos_pages = {
     3: third_photo,
     4: fourth_photo,
 }
-
+#
 OPENAI_ALLOWED_DOC_EXTS: set[str] = {
     'c',     # .c       text/x-c
     'cpp',   # .cpp     text/x-c++
@@ -92,3 +92,14 @@ async def is_valid_email(email):
         return True
     else:
         return False
+
+# ---------------------------------------------------------
+# Глобальный экземпляр GPT-ассистента
+# ---------------------------------------------------------
+# Создаём единый объект, который будет переиспользоваться во всём приложении.
+# Импорт размещён внизу, чтобы избежать циклических зависимостей при импорте
+# модуля settings внутри utils.combined_gpt_tools.
+from utils.combined_gpt_tools import GPT  # noqa: E402
+
+# Единственный экземпляр ассистента, который будет использоваться во всех хендлерах
+gpt_assistant = GPT()

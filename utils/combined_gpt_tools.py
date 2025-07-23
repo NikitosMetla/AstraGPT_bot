@@ -67,6 +67,7 @@ async def get_thread_lock(thread_id: str) -> asyncio.Lock:
 
 load_dotenv(find_dotenv())
 OPENAI_API_KEY: str | None = os.getenv("GPT_TOKEN") or os.getenv("OPENAI_API_KEY")
+assistant_id = os.getenv("ASSISTANT_ID")
 DEFAULT_IMAGE_MODEL = "gpt-image-1"
 DEFAULT_IMAGE_SIZE = "1024x1024"
 
@@ -180,17 +181,17 @@ from db.models import Users
 from db.repository import users_repository
 
 api_key = OPENAI_API_KEY
-assistant_id = _getenv("ASSISTANT_ID")
 
-class GPT:  # noqa: N801 – сохраняем оригинальное имя
+
+class GPT:  # noqa: N801 – сохраняем оригинальное имя
     """Асинхронный помощник, работающий через Threads/Assistants API."""
 
-    def __init__(self, assistant_id: str | None = assistant_id, thread_id: str | None = None):
-        """Инициализирует GPT‑ассистента с необязательным *thread_id*."""
+    def __init__(self, assistant_id: str | None = assistant_id):
+        """Инициализирует GPT-ассистента с необязательным *thread_id*."""
         self.assistant_id = assistant_id
         self.client = AsyncOpenAI(api_key=api_key)
         self.assistant = None
-        self.thread_id = thread_id
+        # thread_id будет передаваться в методе send_message для каждого запроса
         self.vector_store_id: str | None = None
 
     async def _safe_create_run(self, *, thread_id: str, assistant_id: str,
@@ -218,19 +219,19 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
         if self.assistant is None:
             self.assistant = await self.client.beta.assistants.retrieve(assistant_id=self.assistant_id)
 
-    async def _ensure_thread(self, user_id: int):
-        """Возвращает thread, создавая его при необходимости."""
-        if self.thread_id is None:
-            thread = await self.update_thread_id(user_id)
+    async def _ensure_thread(self, *, user_id: int, thread_id: str | None = None):
+        """Гарантирует существование объекта thread: возвращает переданный или создаёт новый."""
+        if thread_id is None:
+            thread = await self._create_thread(user_id)
         else:
-            thread = await self.client.beta.threads.retrieve(thread_id=self.thread_id)
+            thread = await self.client.beta.threads.retrieve(thread_id=thread_id)
         return thread
 
-    async def update_thread_id(self, user_id: int, type_assistant: str | None = "mental"):
-        """Создаёт новый thread и сохраняет его в БД."""
+    async def _create_thread(self, user_id: int, type_assistant: str | None = "mental"):
+        """Создаёт новый thread и сохраняет его в БД; возвращает созданный thread."""
         thread = await self.client.beta.threads.create()
-        self.thread_id = thread.id
-        await users_repository.update_thread_id_by_user_id(user_id=user_id, thread_id=self.thread_id)
+        # Сохраняем идентификатор треда пользователю
+        await users_repository.update_thread_id_by_user_id(user_id=user_id, thread_id=thread.id)
         return thread
 
     async def _sync_vector_store(self, thread_id: str, file_ids: list[str]) -> str:
@@ -286,6 +287,7 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
     async def send_message(
         self,
         user_id: int,
+        thread_id: str | None = None,
         *,
         with_audio_transcription: bool = False,
         text: str | None = None,
@@ -295,12 +297,15 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
         audio_bytes: io.BytesIO | None = None,
         user_data: Users | None = None,
     ):
-        """Отправляет пользовательский запрос с опциональными вложениями."""
+        """Отправляет пользовательский запрос с опциональными вложениями."""
+        # При каждом запросе обновляем текущий thread, если он передан явно
         await self._ensure_assistant()
-        thread = await self._ensure_thread(user_id)
-        lock = await get_thread_lock(thread.id)
+        if thread_id is None:
+            thread = await self._ensure_thread(user_id=user_id, thread_id=thread_id)
+            thread_id = thread.id
+        lock = await get_thread_lock(thread_id)
         async with lock:  # ⬅️  ВСЕ операции с thread – под замком
-            await self._wait_for_active_run(thread.id)
+            await self._wait_for_active_run(thread_id)
 
             # about_user = self._build_about_user(user_data)
             user = await users_repository.get_user_by_user_id(user_id=user_id)
@@ -309,20 +314,20 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
             # print(document_bytes)
             if not any([text, image_bytes, document_bytes, audio_bytes]):
                 return None
-            print(text)
+            # print(text)
             content, attachments, file_ids = await self._build_content(
                 text,
                 image_bytes=image_bytes,
                 document_bytes=document_bytes,
                 audio_bytes=audio_bytes,
             )
-            print(content)
+            # print(content)
             if file_ids:
-                await self._sync_vector_store(thread.id, file_ids)
+                await self._sync_vector_store(thread_id, file_ids)
             # print(attachments)
             try:
                 await self.client.beta.threads.messages.create(
-                    thread_id=thread.id,
+                    thread_id=thread_id,
                     role="user",
                     content=content,
                     attachments=attachments or None,
@@ -330,7 +335,7 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                 )
                 # 4. запускаем новый run и ждём результата
                 run = await self._safe_create_run(
-                    thread_id=thread.id,
+                    thread_id=thread_id,
                     assistant_id=self.assistant.id,
                     instructions=f"Сегодня - {get_current_datetime_string()}\n\n по Москве. Учитывай эту информацию,"
                                  f" если пользователь просит поставить уведомление\n\nОсновные инструкции:\n" + self.assistant.instructions +
@@ -358,7 +363,7 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                                                                          text="🎨Начал работу над изображением, немного магии…")
                         break
                     try:
-                        result = await process_assistant_run(self.client, run, thread.id, user_id=user.user_id)
+                        result = await process_assistant_run(self.client, run, thread_id, user_id=user.user_id)
                         result_images = result.get("final_images")
                         web_answer: str = result.get("web_answer")
                         notification: str = result.get("notif_answer")
@@ -371,7 +376,7 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                                 #         " ты попросил что-то, что выходит за рамки норм", result)
                                 return ("Не смогли сгенерировать изображение или обработать запрос😔\n\nВозможно,"
                                         " ты попросил что-то, что выходит за рамки норм")
-                        messages = await self.client.beta.threads.messages.list(thread_id=thread.id)
+                        messages = await self.client.beta.threads.messages.list(thread_id=thread_id)
                         await delete_message.delete()
                         first_msg = messages.data[0]
                         if web_answer:
@@ -394,19 +399,19 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                                 " Твой запрос может содержать контент, который"
                                 " не разрешен нашей системой безопасности")
                 if run.status == "completed":
-                    messages = await self.client.beta.threads.messages.list(thread_id=thread.id)
+                    messages = await self.client.beta.threads.messages.list(thread_id=thread_id)
                     if messages.data[0].content[0].type == "image_file":
-                        print(messages.data[0].content[0].image_file)
+                        # print(messages.data[0].content[0].image_file)
                         image_file = messages.data[0].content[0].image_file
                         file_id = image_file.file_id
                         file_obj = await self.client.files.retrieve(file_id=file_id)
-                        pprint.pprint(file_obj.json)
+                        # pprint.pprint(file_obj.json)
                         data = await self.client.files.content(file_id)
                         return {"filename": file_obj.filename + ".png", "bytes": await data.aread()}
                     # message_text = _sanitize(
                     #     messages.data[0].content[0].text.value
                     # )
-                    pprint.pprint(messages.data[0].attachments)
+                    # pprint.pprint(messages.data[0].attachments)
                     if messages.data[0].attachments:
                         # print(messages.data[0].content[0].text.value)
                         for content in messages.data[0].attachments:
@@ -429,8 +434,10 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
             except Exception:
                 traceback.print_exc()
                 try:
-                    await self.client.beta.threads.runs.cancel(run_id=run.id, thread_id=thread.id)
+                    await self.client.beta.threads.runs.cancel(run_id=run.id, thread_id=thread_id)
                 finally:
+                    # При фатальной ошибке переинициализируем клиента, чтобы попытаться восстановить соединение
+                    await self._reset_client()
                     logger.log(
                         "GPT_ERROR",
                         f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}"
@@ -544,7 +551,7 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                         # Если не удалось получить файл после retry, возвращаем пользователю понятное сообщение
                         return [{"type": "text", "text": text}], [], []
                     # Статус может отличаться в разных SDK, здесь проверяем конечный
-                    print(file_info.status)
+                    # print(file_info.status)
                     if getattr(file_info, "status", None) in ("uploaded", "processing_complete", "ready", "processed"):
                         break
                     await asyncio.sleep(0.2)
@@ -556,7 +563,7 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                     "type": "image_file",
                     "image_file": {"file_id": img_file.id},
                 })
-                print(image_names)
+                # print(image_names)
 
             text += f"\n\nВот названия изображений: {', '.join(image_names)}"
 
@@ -611,8 +618,10 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                 if any(r.status in ACTIVE for r in runs.data):
                     await self.client.beta.threads.runs.cancel(run_id=run.id, timeout=10)
 
-
-
+        async def _reset_client(self):
+            """Переинициализирует клиента OpenAI и сбрасывает кеш ассистента."""
+            self.client = AsyncOpenAI(api_key=api_key)
+            self.assistant = None
 
 
 async def dispatch_tool_call(tool_call, image_client, user_id: int) -> Any:
@@ -637,7 +646,7 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int) -> Any:
             args = json.loads(args_raw)
         except json.JSONDecodeError:
             print("\n\n")
-            print(args_raw)
+            # print(args_raw)
             print("\n\n")
             # например, обрезать до первого `}` и допarse
             first_obj = args_raw.split('}', 1)[0] + '}'
@@ -646,10 +655,10 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int) -> Any:
     user = await users_repository.get_user_by_user_id(user_id=user_id)
     photo_bytes = []
     if name == "add_notification":
-        print("\n\nadd_notification\n\n")
+        # print("\n\nadd_notification\n\n")
         when_send_str, text_notification = args.get("when_send_str"), args.get("text_notification")
-        print(args)
-        print("Дата отправки:", when_send_str)
+        # print(args)
+        # print("Дата отправки:", when_send_str)
         try:
             await schedule_notification(user_id=user.user_id,
                                         when_send_str=when_send_str,
@@ -659,7 +668,7 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int) -> Any:
             print(traceback.format_exc())
             return "Нельзя запланировать уведомление на прошлое время или неверный формат даты/времени"
     if name == "search_web":
-        print("\n\nsearch_web\n\n")
+        # print("\n\nsearch_web\n\n")
         query = args.get("query") or ""
         # вызываем агент из web_search_agent.py
         result = await web_search_agent.search_prompt(query)
@@ -691,7 +700,7 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int) -> Any:
             return []
 
     if name == "edit_image_only_with_peoples":
-        print("edit_image_only_with_peoples")
+        # print("edit_image_only_with_peoples")
         # print(args.get("prompt"))
         # print(args)
         try:

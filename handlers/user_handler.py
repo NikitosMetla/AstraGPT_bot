@@ -11,8 +11,7 @@ from aiogram_media_group import media_group_handler
 from data.keyboards import profiles_keyboard, cancel_keyboard, settings_keyboard, \
     confirm_clear_context, buy_sub_keyboard, subscriptions_keyboard
 from db.repository import users_repository, ai_requests_repository, subscriptions_repository
-from settings import InputMessage, photos_pages, OPENAI_ALLOWED_DOC_EXTS
-from utils.combined_gpt_tools import GPT
+from settings import InputMessage, photos_pages, OPENAI_ALLOWED_DOC_EXTS, gpt_assistant
 from utils.paginator import MechanicsPaginator
 from utils.parse_gpt_text import split_telegram_html, sanitize_with_links
 
@@ -164,9 +163,10 @@ async def standard_message_handler(message: Message, bot: Bot):
     #     return
     # delete_message = await message.reply("Формулирую ответ, это займет не более 5 секунд")
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    ai_answer = await GPT(thread_id=user.standard_ai_threat_id).send_message(user_id=user_id,
-                                                                             text=text,
-                                                                             user_data=user)
+    ai_answer = await gpt_assistant.send_message(user_id=user_id,
+                                                 thread_id=user.standard_ai_threat_id,
+                                                 text=text,
+                                                 user_data=user)
     images = []
     if type(ai_answer) == dict and ai_answer.get("filename"):
         try:
@@ -182,9 +182,9 @@ async def standard_message_handler(message: Message, bot: Bot):
         ai_answer = ai_answer.get("text")
 
     # print(ai_answer)
-    # ai_answer = sanitize_with_links(ai_answer)
+    ai_answer = sanitize_with_links(ai_answer)
     # pprint.pprint(ai_answer)
-    print(ai_answer)
+    # print(ai_answer)
     await ai_requests_repository.add_request(user_id=user.user_id,
                                              answer_ai=ai_answer if ai_answer is not None and ai_answer != "" else "Выдал файл или фото",
                                              user_question=text,
@@ -195,7 +195,7 @@ async def standard_message_handler(message: Message, bot: Bot):
     if len(images) == 0:
         split_messages = split_telegram_html(ai_answer)
         print("\n\n")
-        pprint.pprint(split_messages)
+        # pprint.pprint(split_messages)
         for chunk in split_messages:
             await message.reply(
                 chunk,
@@ -243,8 +243,9 @@ async def handle_photo_album(messages: list[types.Message], bot: Bot):
     await users_repository.update_last_photo_id_by_user_id(photo_id=", ".join(photo_ids), user_id=user_id)
     # Отправляем весь список в GPT
     await bot.send_chat_action(chat_id=first.chat.id, action="typing")
-    ai_answer = await GPT(thread_id=user.standard_ai_threat_id).send_message(
+    ai_answer = await gpt_assistant.send_message(
         user_id=user_id,
+        thread_id=user.standard_ai_threat_id,
         text=text,
         user_data=user,
         image_bytes=image_buffers,
@@ -317,10 +318,11 @@ async def standard_message_photo_handler(message: Message, bot: Bot):
     # except Exception as e:
     #     await message.answer("ошибка")
     # print()
-    ai_answer = await GPT(thread_id=user.standard_ai_threat_id).send_message(user_id=user.user_id,
-                                                                             text=text,
-                                                                             user_data=user,
-                                                                             image_bytes=[photo_bytes_io])
+    ai_answer = await gpt_assistant.send_message(user_id=user.user_id,
+                                                 thread_id=user.standard_ai_threat_id,
+                                                 text=text,
+                                                 user_data=user,
+                                                 image_bytes=[photo_bytes_io])
     images = []
     if type(ai_answer) == dict and ai_answer.get("filename"):
         try:
@@ -377,14 +379,15 @@ async def standard_message_voice_handler(message: Message, bot: Bot):
     message_voice_id = message.voice.file_id
     await bot.download(message_voice_id, destination=audio_bytes_io)
     try:
-        transcribed_audio_text = await GPT(thread_id=user.standard_ai_threat_id).transcribe_audio(audio_bytes=audio_bytes_io)
+        transcribed_audio_text = await gpt_assistant.transcribe_audio(audio_bytes=audio_bytes_io)
     except:
         await message.answer("Не могу распознать, что в голосовом сообщении, попробуй еще раз")
         return
     # print(transcribed_audio_text)
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    ai_answer = await GPT(thread_id=user.standard_ai_threat_id).send_message(
+    ai_answer = await gpt_assistant.send_message(
         user_id=user_id,
+        thread_id=user.standard_ai_threat_id,
         text=transcribed_audio_text,
         user_data=user)
     images = []
@@ -457,16 +460,18 @@ async def handle_document_album(messages: list[types.Message], bot: Bot):
         doc_buffers.append((buf, file_name, ext))
         file_ids.append(msg.document.file_id)
     if any(message.document.file_name.split('.')[-1].lower() in ['jpg', 'jpeg', 'png', "DNG", "gif", "dng"] for message in messages):
-        ai_answer = await GPT(thread_id=user.standard_ai_threat_id).send_message(
+        ai_answer = await gpt_assistant.send_message(
             user_id=user_id,
+            thread_id=user.standard_ai_threat_id,
             text=text,
             user_data=user,
             image_bytes=[photo[0] for photo in doc_buffers if photo[2] in ['jpg', 'jpeg', 'png', "DNG", "gif", "dng"]],
             document_bytes=[doc for doc in doc_buffers if doc[2] not in ['jpg', 'jpeg', 'png', "DNG", "gif", "dng"]]
         )
     else:
-        ai_answer = await GPT(thread_id=user.standard_ai_threat_id).send_message(
+        ai_answer = await gpt_assistant.send_message(
             user_id=user_id,
+            thread_id=user.standard_ai_threat_id,
             text=text,
             user_data=user,
             document_bytes=doc_buffers
@@ -545,16 +550,18 @@ async def standard_message_document_handler(message: Message, bot: Bot):
         extension = message.document.file_name.split('.')[-1].lower()
         if extension in ['jpg', 'jpeg', 'png', "DNG", "gif", "dng"]:
             await users_repository.update_last_photo_id_by_user_id(photo_id=message.document.file_id, user_id=user_id)
-            ai_answer = await GPT(thread_id=user.standard_ai_threat_id).send_message(user_id=user_id,
-                                                                                     text=text,
-                                                                                     user_data=user,
-                                                                                     image_bytes=[buf])
+            ai_answer = await gpt_assistant.send_message(user_id=user_id,
+                                                         thread_id=user.standard_ai_threat_id,
+                                                         text=text,
+                                                         user_data=user,
+                                                         image_bytes=[buf])
         else:
-            ai_answer = await GPT(thread_id=user.standard_ai_threat_id).send_message(user_id=user_id,
-                                                                                    text=text,
-                                                                                    user_data=user,
-                                                                                    document_bytes=[(buf, file_name, ext)],
-                                                                                    document_type=extension)
+            ai_answer = await gpt_assistant.send_message(user_id=user_id,
+                                                         thread_id=user.standard_ai_threat_id,
+                                                         text=text,
+                                                         user_data=user,
+                                                         document_bytes=[(buf, file_name, ext)],
+                                                         document_type=extension)
         images = []
         if type(ai_answer) == dict and ai_answer.get("filename"):
             try:
@@ -599,6 +606,6 @@ async def standard_message_document_handler(message: Message, bot: Bot):
                                                  )
 
 
-
+#
 
 

@@ -1,4 +1,6 @@
 import asyncio
+import io
+import traceback
 
 from aiogram import Router, types, Bot, F
 from aiogram.fsm.context import FSMContext
@@ -8,7 +10,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot import main_bot
 from data.keyboards import admin_keyboard, add_delete_admin, cancel_keyboard, back_to_bots_keyboard, \
-    db_tables_keyboard, type_users_mailing_keyboard, statistics_keyboard
+    db_tables_keyboard, type_users_mailing_keyboard, statistics_keyboard, confirm_send_mailing
 from db.repository import admin_repository, users_repository, ai_requests_repository, subscriptions_repository, \
     referral_system_repository, events_repository
 from settings import InputMessage, business_connection_id
@@ -149,38 +151,98 @@ async def get_db_tables(message: types.Message, state: FSMContext, bot: Bot):
                                    reply_markup=db_tables_keyboard.as_markup())
 
 
-@admin_router.message(F.text, InputMessage.enter_message_mailing)
-@is_main_admin
-async def enter_message_mailing(message: types.Message, state: FSMContext, bot: Bot):
-    # if filename == "all_bots":
+@admin_router.message(F.photo, InputMessage.enter_message_mailing)
+async def enter_message_photo_mailing(message: types.Message, state: FSMContext, bot: Bot):
+    split_text = message.caption.split("\n")
     state_data = await state.get_data()
     type_users = state_data.get("type_users")
     message_id = state_data.get("message_id")
-    users = await users_repository.select_all_users()
+    photo = message.photo[-1].file_id
+    photo_bytes_io = io.BytesIO()
+    await bot.download(message.photo[-1], destination=photo_bytes_io)
+    print(type_users)
+    user = await users_repository.get_user_by_user_id(user_id=message.from_user.id)
     if type_users == "all":
+        try:
+            # return
+            caption = message.caption
+            if "with usernames" in caption:
+                caption = f"Дорогой {'@' + user.username if user.username else 'друг'}!|||\n\n" + '\n'.join(split_text[1:])
+            mailing_message = await message.answer_photo(caption=caption,
+                                      photo=BufferedInputFile(file=photo_bytes_io.getvalue(),
+                                                              filename="mailing_photo.jpg"),
+                                                        reply_markup = confirm_send_mailing().as_markup())
+            # await message.answer("Подтвердить рассылку сообщения выше?", ))
+        except Exception as e:
+            print(e)
+    await bot.delete_message(message_id=message_id, chat_id=message.from_user.id)
+    await state.clear()
+
+
+@admin_router.callback_query(F.data.startswith("confirm_send_mailing"), any_state)
+@is_main_admin
+async def confirm_mailing_message(call: types.CallbackQuery, state: FSMContext, bot: Bot):
+    await state.clear()
+    call_data = call.data.split("|")
+    is_confirm = True if call_data[1] == "yes" else False
+    message = call.message
+    split_text = message.caption.split("|||")
+    photo_bytes_io = io.BytesIO()
+    await bot.download(message.photo[-1], destination=photo_bytes_io)
+    if len(split_text) > 1:
+        with_usernames = True
+    else:
+        with_usernames = False
+    users = await users_repository.select_all_users()
+    if is_confirm:
+        await message.answer(text="Начали рассылку по пользователями с твоим отправленным фото")
+        await call.message.delete()
+        sending_messages = 0
         for user in users:
-            # print(user.user_id)
-            try:
-                await main_bot.send_message(chat_id=user.user_id, text=message.text)
-            except:
-                continue
-    elif type_users == "sub":
-        for user in users:
-            user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user.user_id)
-            if user_sub:
+            caption = message.caption
+            send_messages = {}
+            if user.user_id == 774127719:
+                    # print("send")
                 try:
-                    await main_bot.send_message(chat_id=user.user_id, text=message.text)
-                except:
+                    if with_usernames:
+                        caption = f"Дорогой {'@' + user.username if user.username else 'друг'}!\n" + '\n'.join(split_text[1:])
+                    send_message = await main_bot.send_photo(chat_id=user.user_id, caption=caption,
+                                              photo=BufferedInputFile(file=photo_bytes_io.getvalue(),
+                                                                      filename="mailing_photo.jpg"))
+                    send_messages[user.user_id] = send_message.message_id
+                    sending_messages += 1
+                except Exception as e:
+                    print(e)
                     continue
-    elif type_users == "not_sub":
-        for user in users:
-            user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user.user_id)
-            if user_sub is None:
-                try:
-                    await main_bot.send_message(chat_id=user.user_id, text=message.text)
-                except:
-                    continue
-    await message.answer(text="Ваша рассылка отправлена всем пользователям бота", reply_markup=admin_keyboard)
+        await message.answer(text=f"Рассылка завершена. {sending_messages} из {len(users)} человек получили рассылку")
+    else:
+        await call.message.delete()
+
+
+@admin_router.message(F.text, InputMessage.enter_message_mailing)
+@is_main_admin
+async def enter_message_mailing(message: types.Message, state: FSMContext, bot: Bot):
+    split_text = message.text.split("\n")
+    state_data = await state.get_data()
+    type_users = state_data.get("type_users")
+    message_id = state_data.get("message_id")
+    photo = message.photo[-1].file_id
+    photo_bytes_io = io.BytesIO()
+    await bot.download(message.photo[-1], destination=photo_bytes_io)
+    print(type_users)
+    user = await users_repository.get_user_by_user_id(user_id=message.from_user.id)
+    if type_users == "all":
+        try:
+            # return
+            text = message.text
+            if "with usernames" in text:
+                caption = f"Дорогой {'@' + user.username if user.username else 'друг'}!|||\n\n" + '\n'.join(
+                    split_text[1:])
+            mailing_message = await message.answer(text=text,
+                                                   reply_markup=confirm_send_mailing().as_markup())
+            # await message.answer("Подтвердить рассылку сообщения выше?", ))
+        except Exception as e:
+            print(e)
     await bot.delete_message(message_id=message_id, chat_id=message.from_user.id)
     await state.clear()
 

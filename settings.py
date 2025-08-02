@@ -1,3 +1,4 @@
+import locale
 import re
 from os import getenv
 
@@ -103,3 +104,16 @@ from utils.combined_gpt_tools import GPT  # noqa: E402
 
 # Единственный экземпляр ассистента, который будет использоваться во всех хендлерах
 gpt_assistant = GPT()
+
+
+def get_weekday_russian(date: datetime.date = None) -> str:
+    import datetime
+    # Устанавливаем русскую локаль
+    locale.setlocale(locale.LC_TIME, 'ru_RU.UTF-8')
+
+    # Если дата не передана — берём текущую
+    if date is None:
+        date = datetime.date.today()
+
+    # Возвращаем день недели (например, 'понедельник')
+    return date.strftime('%A')

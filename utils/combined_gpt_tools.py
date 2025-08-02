@@ -297,6 +297,8 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
         audio_bytes: io.BytesIO | None = None,
         user_data: Users | None = None,
     ):
+        from bot import logger
+        from settings import get_weekday_russian
         """Отправляет пользовательский запрос с опциональными вложениями."""
         # При каждом запросе обновляем текущий thread, если он передан явно
         await self._ensure_assistant()
@@ -337,10 +339,11 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                 run = await self._safe_create_run(
                     thread_id=thread_id,
                     assistant_id=self.assistant.id,
-                    instructions=f"Сегодня - {get_current_datetime_string()}\n\n по Москве. Учитывай эту информацию,"
+                    instructions=f"Сегодня - {get_current_datetime_string()}\n\n по Москве.День недели - {get_weekday_russian()} "
+                                 f"Учитывай эту информацию,"
                                  f" если пользователь просит поставить уведомление\n\nОсновные инструкции:\n" + self.assistant.instructions +
-                                 f"\n\nИнформация о пользователе:\n{about_user}" if about_user else f"Сегодня - "
-                                                               f"{get_current_datetime_string()}\n\n по Москве" +
+                                 f"\n\nИнформация о пользователе:\n{about_user}" if about_user else f"Сегодня - {get_current_datetime_string()}\n\n"
+                                                                                                    f" по Москве.День недели - {get_weekday_russian()}" +
                                                                self.assistant.instructions,
                     model=user.model_type,
                     timeout=15.0,
@@ -428,9 +431,11 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                         return sanitize_with_links(message_text), audio_data
                     return sanitize_with_links(message_text)
                 # print(run.json)
-                print(run.json)
-                return ("Произошла непредвиденная ошибка, попробуй еще раз! Твой запрос может содержать"
-                        " контент, который не разрешен нашей системой безопасности")
+                logger.log(
+                    "GPT_ERROR",
+                    f"ЗАКОНЧИЛИСЬ БАБКИ"
+                )
+                return ("Произошла непредвиденная ошибка, попробуй еще раз! Cейчас наблюдаются сбои в системе")
             except Exception:
                 traceback.print_exc()
                 try:
@@ -618,10 +623,10 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                 if any(r.status in ACTIVE for r in runs.data):
                     await self.client.beta.threads.runs.cancel(run_id=run.id, timeout=10)
 
-        async def _reset_client(self):
-            """Переинициализирует клиента OpenAI и сбрасывает кеш ассистента."""
-            self.client = AsyncOpenAI(api_key=api_key)
-            self.assistant = None
+    async def _reset_client(self):
+        """Переинициализирует клиента OpenAI и сбрасывает кеш ассистента."""
+        self.client = AsyncOpenAI(api_key=api_key)
+        self.assistant = None
 
 
 async def dispatch_tool_call(tool_call, image_client, user_id: int) -> Any:

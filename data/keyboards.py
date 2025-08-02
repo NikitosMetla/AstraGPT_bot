@@ -101,3 +101,14 @@ confirm_clear_context.row(InlineKeyboardButton(text="Не очищать", callb
 settings_keyboard = InlineKeyboardBuilder()
 settings_keyboard.row(InlineKeyboardButton(text="Универсальный", callback_data="mode|universal"))
 settings_keyboard.row(InlineKeyboardButton(text="Специализированный", callback_data="mode|special"))
+
+unlink_card_keyboard = InlineKeyboardBuilder()
+unlink_card_keyboard.row(InlineKeyboardButton(text="Отвязать карту", callback_data="unlink_card"))
+unlink_card_keyboard.row(InlineKeyboardButton(text="Отмена", callback_data="cancel"))
+
+
+def confirm_send_mailing():
+    keyboard = InlineKeyboardBuilder()
+    keyboard.row(InlineKeyboardButton(text="Отравить", callback_data=f"confirm_send_mailing|yes"))
+    keyboard.row(InlineKeyboardButton(text="Отменить", callback_data="confirm_send_mailing|no"))
+    return keyboard

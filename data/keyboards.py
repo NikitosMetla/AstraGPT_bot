@@ -107,6 +107,10 @@ unlink_card_keyboard.row(InlineKeyboardButton(text="Отвязать карту"
 unlink_card_keyboard.row(InlineKeyboardButton(text="Отмена", callback_data="cancel"))
 
 
+delete_payment_keyboard = InlineKeyboardBuilder()
+delete_payment_keyboard.row(InlineKeyboardButton(text="Отвязать карту", callback_data="delete_payment"))
+
+
 def confirm_send_mailing():
     keyboard = InlineKeyboardBuilder()
     keyboard.row(InlineKeyboardButton(text="Отравить", callback_data=f"confirm_send_mailing|yes"))

@@ -16,17 +16,6 @@ from utils.payment_for_services import create_payment, check_payment
 payment_router = Router()
 
 
-@payment_router.message(F.text == "/unlink_card", any_state)
-async def sub_message(message: Message, state: FSMContext, bot: Bot):
-    user_id = message.from_user.id
-    user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user_id)
-    if user_sub is None:
-        await message.answer("✨Дорогой друг, на данный момент у тебя нет активной подписки и привязанной карты в частности")
-        return
-    await message.answer("Ты уверен, что хочешь отвязать карту для оплаты подписки? После этого"
-                         " твоя подписка не сможет автоматически продлеваться",
-                         reply_markup=unlink_card_keyboard.as_markup())
-
 
 @payment_router.callback_query(F.data == "unlink_card", any_state)
 async def sub_message(call: CallbackQuery, state: FSMContext, bot: Bot):

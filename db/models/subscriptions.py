@@ -16,7 +16,12 @@ class Subscriptions(BaseModel, CleanModel):
     start_date = Column(DateTime, nullable=False, default=func.now())
     time_limit_subscription = Column(Integer, nullable=False)
     active = Column(Boolean, nullable=False, default=True)
-    send_notification = Column(Boolean, nullable=False, default=False, unique=False)
+    # send_notification = Column(Boolean, nullable=False, default=False, unique=False)
+    plan_name = Column(String, nullable=False)
+    photo_generations = Column(BigInteger, nullable=False)
+    with_voice = Column(Boolean, nullable=False, default=False)
+    with_files = Column(Boolean, nullable=False, default=False)
+    web_search = Column(Boolean, nullable=False, default=False)
 
     @property
     def stats(self) -> str:

@@ -433,7 +433,7 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                 # print(run.json)
                 logger.log(
                     "GPT_ERROR",
-                    f"ЗАКОНЧИЛИСЬ БАБКИ"
+                    f"ЗАКОНЧИЛИСЬ БАБКИ или другая ошибка gpt: {traceback.format_exc()}"
                 )
                 return ("Произошла непредвиденная ошибка, попробуй еще раз! Cейчас наблюдаются сбои в системе")
             except Exception:

@@ -11,7 +11,9 @@ class SubscriptionsRepository:
     def __init__(self):
         self.session_maker = DatabaseEngine().create_session()
 
-    async def add_subscription(self, user_id: int, time_limit_subscription: int, active: bool = True):
+    async def add_subscription(self, user_id: int, time_limit_subscription: int, active: bool = True,
+                               with_voice: bool | None = False, photo_generations: int | None = None,
+                               with_files: bool | None = None, plan_name: str | None = None) -> bool:
         """    user_id = Column(BigInteger, ForeignKey('users.user_id'), nullable=False)
                 user: Mapped[Users] = relationship("Users", backref=__tablename__, cascade='all', lazy='subquery')
                 start_subscription_date = Column(DateTime, nullable=False)
@@ -21,7 +23,8 @@ class SubscriptionsRepository:
             session: AsyncSession
             async with session.begin():
                 user = Subscriptions(user_id=user_id, time_limit_subscription=time_limit_subscription,
-                                     active=active)
+                                     active=active, with_voice=with_voice, plan_name=plan_name,
+                                     with_files=with_files, photo_generations=photo_generations)
                 try:
                     session.add(user)
                 except Exception:
@@ -81,15 +84,15 @@ class SubscriptionsRepository:
                 await session.execute(sql)
                 await session.commit()
 
-    async def update_send_notification_subscription(self, subscription_id: int):
-        async with self.session_maker() as session:
-            session: AsyncSession
-            async with session.begin():
-                sql = update(Subscriptions).values({
-                    Subscriptions.send_notification: True
-                }).where(or_(Subscriptions.id == subscription_id))
-                await session.execute(sql)
-                await session.commit()
+    # async def update_send_notification_subscription(self, subscription_id: int):
+    #     async with self.session_maker() as session:
+    #         session: AsyncSession
+    #         async with session.begin():
+    #             sql = update(Subscriptions).values({
+    #                 Subscriptions.send_notification: True
+    #             }).where(or_(Subscriptions.id == subscription_id))
+    #             await session.execute(sql)
+    #             await session.commit()
 
     async def delete_subscription_by_id(self, id: int):
         async with self.session_maker() as session:

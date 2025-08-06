@@ -14,11 +14,13 @@ from db.repository import admin_repository
 from handlers.user_handler import standard_router
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from settings import storage_bot, token_design_level
+from settings import storage_bot, main_bot_token
 from utils.schedulers import send_notif, safe_send_notif, job_error_listener, scheduler, monitor_scheduler
 
-main_bot = Bot(token=token_design_level,
+
+main_bot = Bot(token=main_bot_token,
                default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+
 
 # глобальная переменная для хранения основного event loop
 _loop: asyncio.AbstractEventLoop | None = None

@@ -9,7 +9,7 @@ from aiogram.types import Message, CallbackQuery, BufferedInputFile, InputMediaP
 from aiogram_media_group import media_group_handler
 
 from data.keyboards import profiles_keyboard, cancel_keyboard, settings_keyboard, \
-    confirm_clear_context, buy_sub_keyboard, subscriptions_keyboard
+    confirm_clear_context, buy_sub_keyboard, subscriptions_keyboard, delete_payment_keyboard, unlink_card_keyboard
 from db.repository import users_repository, ai_requests_repository, subscriptions_repository
 from settings import InputMessage, photos_pages, OPENAI_ALLOWED_DOC_EXTS, gpt_assistant
 from utils.paginator import MechanicsPaginator
@@ -18,18 +18,63 @@ from utils.parse_gpt_text import split_telegram_html, sanitize_with_links
 standard_router = Router()
 
 
+@standard_router.callback_query(F.data == "delete_payment", any_state)
+@standard_router.message(F.text == "/unlink_card", any_state)
+async def sub_message(message: Message | CallbackQuery, state: FSMContext, bot: Bot):
+    user_id = message.from_user.id
+    user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user_id)
+    if type(message) == Message:
+        if user_sub is None:
+            await message.answer("✨Дорогой друг, на данный момент у тебя нет активной подписки и привязанной карты в частности")
+            return
+        await message.answer("Ты уверен, что хочешь отвязать карту для оплаты подписки? После этого"
+                             " твоя подписка не сможет автоматически продлеваться",
+                             reply_markup=unlink_card_keyboard.as_markup())
+    else:
+        if user_sub is None:
+            await message.message.answer("✨Дорогой друг, на данный момент у тебя нет активной подписки и привязанной карты в частности")
+            return
+        await message.message.delete()
+        await message.message.answer("Ты уверен, что хочешь отвязать карту для оплаты подписки? После этого"
+                             " твоя подписка не сможет автоматически продлеваться",
+                             reply_markup=unlink_card_keyboard.as_markup())
+
+
+@standard_router.callback_query(F.data == "unlink_card", any_state)
+async def sub_message(call: CallbackQuery, state: FSMContext, bot: Bot):
+    user_id = call.from_user.id
+    user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user_id)
+    if user_sub is None or user_sub.plan_name == "Free":
+        await call.message.answer(
+            "✨Дорогой друг, на данный момент у тебя нет активной подписки и привязанной карты в частности")
+        return
+    if user_sub.method_id is None:
+        await call.message.answer(
+            "✨Дорогой друг, на данный момент у тебя уже не привязана никакая карта")
+        return
+    await subscriptions_repository.delete_payment_method(subscription_id=user_sub.id)
+    await call.message.delete()
+    await call.message.answer("Отлично, отвязали твой метод оплаты. Теперь твоя подписка не сможет продлеваться автоматически")
+
+
 @standard_router.message(F.text == "/subscribe", any_state)
-async def sub_message(message: Message, state: FSMContext, bot: Bot, user_data):
-    await message.answer("""🔓 Откройте весь потенциал нашего ИИ-бота — оформите подписку прямо здесь.
-
-Тарифы
-• Smart — 499 ₽/мес: неограниченный доступ к модели GPT-4o-mini (до 1 000 сообщений).
-• Pro — 999 ₽/мес: приоритетный канал к GPT-4o и безлимитные запросы, а также модель для генерации изображений gpt-image-1.
-
-📅 Подписка активируется мгновенно, отменить можно в любой момент.
-
-😊 Выберите подходящий уровень и нажмите «Оплатить» — мы уже готовы помочь!""",
-                         reply_markup=buy_sub_keyboard.as_markup())
+async def sub_message(message: Message, state: FSMContext, bot: Bot):
+    user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=message.from_user.id)
+    if user_sub is not None:
+        await message.answer("""🔓 Откройте весь потенциал нашего ИИ-бота — оформите подписку прямо здесь.
+    
+    Тарифы
+    • Smart — 499 ₽/мес: неограниченный доступ к модели GPT-4o-mini (до 1 000 сообщений).
+    • Pro — 999 ₽/мес: приоритетный канал к GPT-4o и безлимитные запросы, а также модель для генерации изображений gpt-image-1.
+    
+    📅 Подписка активируется мгновенно, отменить можно в любой момент.
+    
+    😊 Выберите подходящий уровень и нажмите «Оплатить» — мы уже готовы помочь!""",
+                             reply_markup=buy_sub_keyboard.as_markup())
+    else:
+        await message.answer("Дорогой друг, на данный момент у тебя подключена стандартная подписка."
+                             " Если ты хочешь отвязать карту, то нажми на кнопку ниже",
+                             reply_markup=delete_payment_keyboard.as_markup())
 
 
 @standard_router.callback_query(F.data == "buy_sub")

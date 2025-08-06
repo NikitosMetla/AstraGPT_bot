@@ -198,9 +198,9 @@ async def confirm_mailing_message(call: types.CallbackQuery, state: FSMContext, 
         await message.answer(text="Начали рассылку по пользователями с твоим отправленным фото")
         await call.message.delete()
         sending_messages = 0
+        send_messages = {}
         for user in users:
             caption = message.caption
-            send_messages = {}
             if user.user_id == 774127719:
                     # print("send")
                 try:
@@ -215,6 +215,7 @@ async def confirm_mailing_message(call: types.CallbackQuery, state: FSMContext, 
                     print(e)
                     continue
         await message.answer(text=f"Рассылка завершена. {sending_messages} из {len(users)} человек получили рассылку")
+        print(send_messages)
     else:
         await call.message.delete()
 
@@ -236,7 +237,7 @@ async def enter_message_mailing(message: types.Message, state: FSMContext, bot: 
             # return
             text = message.text
             if "with usernames" in text:
-                caption = f"Дорогой {'@' + user.username if user.username else 'друг'}!|||\n\n" + '\n'.join(
+                text = f"Дорогой {'@' + user.username if user.username else 'друг'}!|||\n\n" + '\n'.join(
                     split_text[1:])
             mailing_message = await message.answer(text=text,
                                                    reply_markup=confirm_send_mailing().as_markup())

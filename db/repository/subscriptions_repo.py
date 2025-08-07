@@ -11,9 +11,8 @@ class SubscriptionsRepository:
     def __init__(self):
         self.session_maker = DatabaseEngine().create_session()
 
-    async def add_subscription(self, user_id: int, time_limit_subscription: int, active: bool = True,
-                               with_voice: bool | None = False, photo_generations: int | None = None,
-                               with_files: bool | None = None, plan_name: str | None = None) -> bool:
+    async def add_subscription(self, type_sub_id: int, photo_generations: int, user_id: int, time_limit_subscription: int, active: bool = True,
+                               method_id: str | None = None) -> bool:
         """    user_id = Column(BigInteger, ForeignKey('users.user_id'), nullable=False)
                 user: Mapped[Users] = relationship("Users", backref=__tablename__, cascade='all', lazy='subquery')
                 start_subscription_date = Column(DateTime, nullable=False)
@@ -23,8 +22,8 @@ class SubscriptionsRepository:
             session: AsyncSession
             async with session.begin():
                 user = Subscriptions(user_id=user_id, time_limit_subscription=time_limit_subscription,
-                                     active=active, with_voice=with_voice, plan_name=plan_name,
-                                     with_files=with_files, photo_generations=photo_generations)
+                                     active=active, type_subscription_id=type_sub_id, method_id=method_id,
+                                     photo_generations=photo_generations)
                 try:
                     session.add(user)
                 except Exception:

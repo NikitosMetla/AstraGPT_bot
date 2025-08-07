@@ -57,3 +57,23 @@ async def create_payment(email: str,
 async def check_payment(payment_id):
     payment = Payment.find_one(payment_id)
     return payment.status == 'succeeded'
+
+def create_recurring_payment(method_id: str,
+                             amount: str,
+                             currency: str = "RUB",
+                             description: str = "Автосписание подписки"):
+    payment = Payment.create({
+        "amount": {
+            "value": amount,
+            "currency": currency
+        },
+        "payment_method_id": method_id,
+        "capture": True,
+        "description": description
+    })
+    print(payment.status)
+    return payment.status == 'succeeded'
+
+
+def get_payment(payment_id):
+    return Payment.find_one(payment_id=payment_id)

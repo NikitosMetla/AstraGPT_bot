@@ -5,6 +5,7 @@ from .notifications import Notifications
 from .operations import Operations
 from .reposts import Reposts
 from .subscriptions import Subscriptions
+from .type_subscriptions import TypeSubscriptions
 from .users import Users
 from .referral_system import ReferralSystem
 from .promo_activations import PromoActivations
@@ -19,5 +20,6 @@ __all__ = ['Users',
            'Notifications',
            'ReferralSystem',
            'PromoActivations',
-           'Events'
+           'Events',
+           'TypeSubscriptions'
            ]

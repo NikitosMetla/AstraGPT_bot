@@ -22,6 +22,7 @@ from openai import (
     PermissionDeniedError,
     RateLimitError, BadRequestError, )
 
+from data.keyboards import subscriptions_keyboard
 from settings import get_current_datetime_string, print_log
 from utils import web_search_agent
 from utils.create_notification import schedule_notification, NotificationSchedulerError
@@ -31,6 +32,11 @@ from utils.runway_api import generate_image_bytes
 # combined_gpt_tools.py
 
 _thread_locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+
+class NoSubscription(Exception):
+    """Ошибка отсутствия подписки для функции"""
+    pass
 
 
 import asyncio
@@ -178,7 +184,7 @@ def _image_content(b: bytes, detail: str = "auto") -> dict:
 
 from os import getenv as _getenv
 from db.models import Users
-from db.repository import users_repository
+from db.repository import users_repository, subscriptions_repository, type_subscriptions_repository
 
 api_key = OPENAI_API_KEY
 
@@ -352,6 +358,16 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                 # ---------------- NEW: обработка image‑tools ----------------
                 if run.status == "requires_action":
                     from bot import main_bot
+                    user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user.user_id)
+                    sub_types = await type_subscriptions_repository.select_all_type_subscriptions()
+                    if user_sub is None:
+                        from test_bot import test_bot
+                        from settings import sub_text
+                        await test_bot.send_message(chat_id=user.user_id,
+                                                    text="🚨К сожалению, данная функция, которую ты"
+                                                " пытаешься использовать доступна только по подписке\n\n" + sub_text,
+                                                    reply_markup=subscriptions_keyboard(sub_types).as_markup())
+                        raise NoSubscription(f"User {user.user_id} dont has active subscription")
                     delete_message = None
                     for tc in run.required_action.submit_tool_outputs.tool_calls:
                         if tc.function.name == "search_web":
@@ -362,6 +378,8 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                                 text="🖌Начал настраивать напоминание, это не займет много времени...",
                                 chat_id=user.user_id)
                         else:
+                            if user_sub.photo_generations <= 0:
+                                return "Дорогой друг, у тебя закончились генерации изображений по твоему плану"
                             delete_message = await main_bot.send_message(chat_id=user.user_id,
                                                                          text="🎨Начал работу над изображением, немного магии…")
                         break
@@ -433,9 +451,11 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                 # print(run.json)
                 logger.log(
                     "GPT_ERROR",
-                    f"ЗАКОНЧИЛИСЬ БАБКИ или другая ошибка gpt: {traceback.format_exc()}"
+                    f"ЗАКОНЧИЛИСЬ БАБКИ или другая ошибка gpt: {run.json()}"
                 )
                 return ("Произошла непредвиденная ошибка, попробуй еще раз! Cейчас наблюдаются сбои в системе")
+            except NoSubscription:  # 1. пропускаем тарифные ошибки
+                raise
             except Exception:
                 traceback.print_exc()
                 try:

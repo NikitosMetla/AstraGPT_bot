@@ -17,11 +17,9 @@ class Subscriptions(BaseModel, CleanModel):
     time_limit_subscription = Column(Integer, nullable=False)
     active = Column(Boolean, nullable=False, default=True)
     # send_notification = Column(Boolean, nullable=False, default=False, unique=False)
-    plan_name = Column(String, nullable=False)
-    photo_generations = Column(BigInteger, nullable=False)
-    with_voice = Column(Boolean, nullable=False, default=False)
-    with_files = Column(Boolean, nullable=False, default=False)
-    web_search = Column(Boolean, nullable=False, default=False)
+    type_subscription_id = Column(BigInteger, ForeignKey('type_subscriptions.id'), nullable=False, unique=False)
+    method_id = Column(String, nullable=False, unique=False)
+    photo_generations = Column(BigInteger, nullable=False, default=0)
 
     @property
     def stats(self) -> str:

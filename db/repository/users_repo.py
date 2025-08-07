@@ -50,6 +50,16 @@ class UserRepository:
                 query = await session.execute(sql)
                 return query.scalars().one_or_none()
 
+    async def update_email_by_user_id(self, user_id: int, email: str):
+        async with self.session_maker() as session:
+            session: AsyncSession
+            async with session.begin():
+                sql = update(Users).values({
+                    Users.email: email
+                }).where(or_(Users.user_id == user_id))
+                await session.execute(sql)
+                await session.commit()
+
     async def select_all_users(self) -> Sequence[Users]:
         async with self.session_maker() as session:
             session: AsyncSession
@@ -58,7 +68,7 @@ class UserRepository:
                 query = await session.execute(sql)
                 return query.scalars().all()
 
-    async def update_thread_id_by_user_id(self, user_id: int, thread_id: int):
+    async def update_thread_id_by_user_id(self, user_id: int, thread_id: str):
         async with self.session_maker() as session:
             session: AsyncSession
             async with session.begin():

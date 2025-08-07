@@ -10,8 +10,11 @@ from aiogram_media_group import media_group_handler
 
 from data.keyboards import profiles_keyboard, cancel_keyboard, settings_keyboard, \
     confirm_clear_context, buy_sub_keyboard, subscriptions_keyboard, delete_payment_keyboard, unlink_card_keyboard
-from db.repository import users_repository, ai_requests_repository, subscriptions_repository
-from settings import InputMessage, photos_pages, OPENAI_ALLOWED_DOC_EXTS, gpt_assistant
+from db.repository import users_repository, ai_requests_repository, subscriptions_repository, \
+    type_subscriptions_repository
+from settings import InputMessage, photos_pages, OPENAI_ALLOWED_DOC_EXTS, gpt_assistant, sub_text, gpt_completions
+from utils.combined_gpt_tools import NoSubscription
+from utils.is_subscriber import is_subscriber
 from utils.paginator import MechanicsPaginator
 from utils.parse_gpt_text import split_telegram_html, sanitize_with_links
 
@@ -60,31 +63,20 @@ async def sub_message(call: CallbackQuery, state: FSMContext, bot: Bot):
 @standard_router.message(F.text == "/subscribe", any_state)
 async def sub_message(message: Message, state: FSMContext, bot: Bot):
     user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=message.from_user.id)
-    if user_sub is not None:
-        await message.answer("""🔓 Откройте весь потенциал нашего ИИ-бота — оформите подписку прямо здесь.
-    
-    Тарифы
-    • Smart — 499 ₽/мес: неограниченный доступ к модели GPT-4o-mini (до 1 000 сообщений).
-    • Pro — 999 ₽/мес: приоритетный канал к GPT-4o и безлимитные запросы, а также модель для генерации изображений gpt-image-1.
-    
-    📅 Подписка активируется мгновенно, отменить можно в любой момент.
-    
-    😊 Выберите подходящий уровень и нажмите «Оплатить» — мы уже готовы помочь!""",
-                             reply_markup=buy_sub_keyboard.as_markup())
+    if user_sub is None:
+        sub_types = await type_subscriptions_repository.select_all_type_subscriptions()
+        await message.answer(sub_text,
+                                  reply_markup=subscriptions_keyboard(sub_types).as_markup())
     else:
         await message.answer("Дорогой друг, на данный момент у тебя подключена стандартная подписка."
                              " Если ты хочешь отвязать карту, то нажми на кнопку ниже",
                              reply_markup=delete_payment_keyboard.as_markup())
 
 
-@standard_router.callback_query(F.data == "buy_sub")
-async def choice_sub_message(call: CallbackQuery, state: FSMContext):
-    await call.message.delete()
-    await call.message.answer("""Выбери тип подписки, которую хочешь приобрести:
-Тарифы
-    • Smart — 499 ₽/мес: неограниченный доступ к модели GPT-4o-mini (до 1 000 сообщений).
-    • Pro — 999 ₽/мес: приоритетный канал к GPT-4o и безлимитные запросы, а также модель для генерации изображений gpt-image-1.""",
-                              reply_markup=subscriptions_keyboard.as_markup())
+# @standard_router.callback_query(F.data == "buy_sub")
+# async def choice_sub_message(call: CallbackQuery, state: FSMContext):
+#     await call.message.delete()
+
 
 
 
@@ -109,8 +101,11 @@ async def get_page_paginator(call: CallbackQuery, state: FSMContext):
 async def send_user_message(message: Message, state: FSMContext, bot: Bot, user_data):
     paginator = MechanicsPaginator(page_now=1)
     keyboard = paginator.generate_now_page()
-    await message.answer_photo(photo=photos_pages.get(paginator.page_now),
-                               reply_markup=keyboard)
+    try:
+        await message.answer_photo(photo=photos_pages.get(paginator.page_now),
+                                   reply_markup=keyboard)
+    except:
+        await message.answer("Привет")
 
 
 @standard_router.message(F.text == "/profile", any_state)
@@ -159,6 +154,7 @@ async def send_user_message(call: CallbackQuery, state: FSMContext, bot: Bot):
 
 
 @standard_router.callback_query(F.data.startswith("mode|"), any_state)
+@is_subscriber
 async def send_user_message(call: CallbackQuery, state: FSMContext, bot: Bot):
     mode = call.data.split("|")[1]
     chat = await bot.get_chat(call.from_user.id)
@@ -208,10 +204,20 @@ async def standard_message_handler(message: Message, bot: Bot):
     #     return
     # delete_message = await message.reply("Формулирую ответ, это займет не более 5 секунд")
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    ai_answer = await gpt_assistant.send_message(user_id=user_id,
-                                                 thread_id=user.standard_ai_threat_id,
-                                                 text=text,
-                                                 user_data=user)
+    try:
+        ai_answer = await gpt_completions.send_message(
+            user_id=user_id,
+            text=message.text
+        )
+    except:
+        print(traceback.format_exc())
+    # try:
+    #     ai_answer = await gpt_assistant.send_message(user_id=user_id,
+    #                                                  thread_id=user.standard_ai_threat_id,
+    #                                                  text=text,
+    #                                                  user_data=user)
+    # except NoSubscription:
+    #     return
     images = []
     if type(ai_answer) == dict and ai_answer.get("filename"):
         try:
@@ -288,14 +294,16 @@ async def handle_photo_album(messages: list[types.Message], bot: Bot):
     await users_repository.update_last_photo_id_by_user_id(photo_id=", ".join(photo_ids), user_id=user_id)
     # Отправляем весь список в GPT
     await bot.send_chat_action(chat_id=first.chat.id, action="typing")
-    ai_answer = await gpt_assistant.send_message(
-        user_id=user_id,
-        thread_id=user.standard_ai_threat_id,
-        text=text,
-        user_data=user,
-        image_bytes=image_buffers,
-    )
-
+    try:
+        ai_answer = await gpt_assistant.send_message(
+            user_id=user_id,
+            thread_id=user.standard_ai_threat_id,
+            text=text,
+            user_data=user,
+            image_bytes=image_buffers,
+        )
+    except NoSubscription:
+        return
     images = []
     if type(ai_answer) == dict and ai_answer.get("filename"):
         try:
@@ -363,11 +371,14 @@ async def standard_message_photo_handler(message: Message, bot: Bot):
     # except Exception as e:
     #     await message.answer("ошибка")
     # print()
-    ai_answer = await gpt_assistant.send_message(user_id=user.user_id,
-                                                 thread_id=user.standard_ai_threat_id,
-                                                 text=text,
-                                                 user_data=user,
-                                                 image_bytes=[photo_bytes_io])
+    try:
+        ai_answer = await gpt_assistant.send_message(user_id=user.user_id,
+                                                     thread_id=user.standard_ai_threat_id,
+                                                     text=text,
+                                                     user_data=user,
+                                                     image_bytes=[photo_bytes_io])
+    except NoSubscription:
+        return
     images = []
     if type(ai_answer) == dict and ai_answer.get("filename"):
         try:
@@ -410,7 +421,8 @@ async def standard_message_photo_handler(message: Message, bot: Bot):
 
 
 @standard_router.message(F.voice)
-async def standard_message_voice_handler(message: Message, bot: Bot):
+@is_subscriber
+async def standard_message_voice_handler(message: Message, bot: Bot, state: FSMContext):
     user_id = message.from_user.id
     user = await users_repository.get_user_by_user_id(user_id=user_id)
     # if user is not None and user.full_registration:
@@ -430,11 +442,14 @@ async def standard_message_voice_handler(message: Message, bot: Bot):
         return
     # print(transcribed_audio_text)
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    ai_answer = await gpt_assistant.send_message(
-        user_id=user_id,
-        thread_id=user.standard_ai_threat_id,
-        text=transcribed_audio_text,
-        user_data=user)
+    try:
+        ai_answer = await gpt_assistant.send_message(
+            user_id=user_id,
+            thread_id=user.standard_ai_threat_id,
+            text=transcribed_audio_text,
+            user_data=user)
+    except NoSubscription:
+        return
     images = []
     if type(ai_answer) == dict and ai_answer.get("filename"):
         try:
@@ -480,7 +495,8 @@ async def standard_message_voice_handler(message: Message, bot: Bot):
     F.content_type == "document"
 )
 @media_group_handler
-async def handle_document_album(messages: list[types.Message], bot: Bot):
+@is_subscriber
+async def handle_document_album(messages: list[types.Message], bot: Bot, state: FSMContext):
     first = messages[-1]
     user_id = first.from_user.id
     user = await users_repository.get_user_by_user_id(user_id=user_id)
@@ -505,22 +521,28 @@ async def handle_document_album(messages: list[types.Message], bot: Bot):
         doc_buffers.append((buf, file_name, ext))
         file_ids.append(msg.document.file_id)
     if any(message.document.file_name.split('.')[-1].lower() in ['jpg', 'jpeg', 'png', "DNG", "gif", "dng"] for message in messages):
-        ai_answer = await gpt_assistant.send_message(
-            user_id=user_id,
-            thread_id=user.standard_ai_threat_id,
-            text=text,
-            user_data=user,
-            image_bytes=[photo[0] for photo in doc_buffers if photo[2] in ['jpg', 'jpeg', 'png', "DNG", "gif", "dng"]],
-            document_bytes=[doc for doc in doc_buffers if doc[2] not in ['jpg', 'jpeg', 'png', "DNG", "gif", "dng"]]
-        )
+        try:
+            ai_answer = await gpt_assistant.send_message(
+                user_id=user_id,
+                thread_id=user.standard_ai_threat_id,
+                text=text,
+                user_data=user,
+                image_bytes=[photo[0] for photo in doc_buffers if photo[2] in ['jpg', 'jpeg', 'png', "DNG", "gif", "dng"]],
+                document_bytes=[doc for doc in doc_buffers if doc[2] not in ['jpg', 'jpeg', 'png', "DNG", "gif", "dng"]]
+            )
+        except NoSubscription:
+            return
     else:
-        ai_answer = await gpt_assistant.send_message(
-            user_id=user_id,
-            thread_id=user.standard_ai_threat_id,
-            text=text,
-            user_data=user,
-            document_bytes=doc_buffers
-        )
+        try:
+            ai_answer = await gpt_assistant.send_message(
+                user_id=user_id,
+                thread_id=user.standard_ai_threat_id,
+                text=text,
+                user_data=user,
+                document_bytes=doc_buffers
+            )
+        except NoSubscription:
+            return
     images = []
     if type(ai_answer) == dict and ai_answer.get("filename"):
         try:
@@ -567,7 +589,8 @@ async def handle_document_album(messages: list[types.Message], bot: Bot):
 
 
 @standard_router.message(F.document, F.media_group_id.is_(None))
-async def standard_message_document_handler(message: Message, bot: Bot):
+@is_subscriber
+async def standard_message_document_handler(message: Message, bot: Bot, state: FSMContext):
     user_id = message.from_user.id
     user = await users_repository.get_user_by_user_id(user_id=user_id)
     # if user is not None and user.full_registration:
@@ -595,18 +618,24 @@ async def standard_message_document_handler(message: Message, bot: Bot):
         extension = message.document.file_name.split('.')[-1].lower()
         if extension in ['jpg', 'jpeg', 'png', "DNG", "gif", "dng"]:
             await users_repository.update_last_photo_id_by_user_id(photo_id=message.document.file_id, user_id=user_id)
-            ai_answer = await gpt_assistant.send_message(user_id=user_id,
-                                                         thread_id=user.standard_ai_threat_id,
-                                                         text=text,
-                                                         user_data=user,
-                                                         image_bytes=[buf])
+            try:
+                ai_answer = await gpt_assistant.send_message(user_id=user_id,
+                                                             thread_id=user.standard_ai_threat_id,
+                                                             text=text,
+                                                             user_data=user,
+                                                             image_bytes=[buf])
+            except NoSubscription:
+                return
         else:
-            ai_answer = await gpt_assistant.send_message(user_id=user_id,
-                                                         thread_id=user.standard_ai_threat_id,
-                                                         text=text,
-                                                         user_data=user,
-                                                         document_bytes=[(buf, file_name, ext)],
-                                                         document_type=extension)
+            try:
+                ai_answer = await gpt_assistant.send_message(user_id=user_id,
+                                                             thread_id=user.standard_ai_threat_id,
+                                                             text=text,
+                                                             user_data=user,
+                                                             document_bytes=[(buf, file_name, ext)],
+                                                             document_type=extension)
+            except NoSubscription:
+                return
         images = []
         if type(ai_answer) == dict and ai_answer.get("filename"):
             try:
@@ -651,6 +680,6 @@ async def standard_message_document_handler(message: Message, bot: Bot):
                                                  )
 
 
-#
+
 
 

@@ -1,7 +1,17 @@
 from aiogram.types import InlineKeyboardButton, KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardMarkup, WebAppInfo
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from settings import table_names
+table_names = [
+    "admins",
+    "ai_requests",
+    "events",
+    "operations",
+    "promo_activations",
+    "referral_system",
+    "subscriptions",
+    "users",
+    "notifications"
+]
 
 # def call_manager_keyboard(user_id, username: str):
 #     keyboard = InlineKeyboardBuilder()
@@ -22,17 +32,21 @@ buy_sub_keyboard.row(InlineKeyboardButton(text="🚀Купить подписк�
 
 menu_button = InlineKeyboardButton(text="В меню", callback_data="start_menu")
 
-async def keyboard_for_pay(operation_id: str, url: str, time_limit: int, max_generations: int):
+async def keyboard_for_pay(operation_id: str, url: str, time_limit: int, type_sub_id: int):
     pay_ai_keyboard = InlineKeyboardBuilder()
     pay_ai_keyboard.row(InlineKeyboardButton(text="Оплатить", web_app=WebAppInfo(url=url)))
     pay_ai_keyboard.row(InlineKeyboardButton(text="Оплата произведена",
-                                             callback_data=f"is_paid|{operation_id}|{time_limit}|{max_generations}"))
+                                             callback_data=f"is_paid|{operation_id}|{time_limit}|{type_sub_id}"))
     return pay_ai_keyboard
 
-subscriptions_keyboard = InlineKeyboardBuilder()
-subscriptions_keyboard.row(InlineKeyboardButton(text="499р/месяц", callback_data=f"choice_sub|smart"))
-subscriptions_keyboard.row(InlineKeyboardButton(text="999р/месяц", callback_data=f"choice_sub|pro"))
-subscriptions_keyboard.row(menu_button)
+
+def subscriptions_keyboard(type_subs: list):
+    keyboard = InlineKeyboardBuilder()
+    for type_sub in type_subs:
+        keyboard.row(InlineKeyboardButton(text=f"{type_sub.plan_name} - {type_sub.price} ₽/мес",
+                                          callback_data=f"choice_sub|{type_sub.id}"))
+    # keyboard.row(menu_button)
+    return keyboard
 
 
 menu_button = InlineKeyboardButton(text="В меню", callback_data="start_menu")

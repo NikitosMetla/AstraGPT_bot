@@ -161,7 +161,9 @@ def restore_anchors(text: str, anchors: list[str]) -> str:
     return text
 
 # Собираем всё вместе
-def sanitize_with_links(raw: str) -> str:
+def sanitize_with_links(raw: str | None = None) -> str:
+    if raw is None:
+        return ""
     # а) превращаем Markdown и голые URL в <a>
     t = md_to_anchor(raw)
     t = url_to_anchor(t)

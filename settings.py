@@ -6,6 +6,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv, find_dotenv
 
+from db.repository import subscriptions_repository
+
 storage_bot = MemoryStorage()
 storage_admin_bot = MemoryStorage()
 
@@ -67,24 +69,12 @@ def print_log(message: str) -> None:
 
 
 class InputMessage(StatesGroup):
+    enter_email = State()
     enter_user_context_state = State()
     enter_message_mailing = State()
     enter_admin_id = State()
     enter_promo_days = State()
     enter_max_activations_promo = State()
-
-
-table_names = [
-    "admins",
-    "ai_requests",
-    "events",
-    "operations",
-    "promo_activations",
-    "referral_system",
-    "subscriptions",
-    "users",
-    "notifications"
-]
 
 
 async def is_valid_email(email):
@@ -105,6 +95,10 @@ from utils.combined_gpt_tools import GPT  # noqa: E402
 # Единственный экземпляр ассистента, который будет использоваться во всех хендлерах
 gpt_assistant = GPT()
 
+from utils.completions_gpt_tools import GPTCompletions
+
+gpt_completions = GPTCompletions()
+
 
 def get_weekday_russian(date: datetime.date = None) -> str:
     import datetime
@@ -117,3 +111,131 @@ def get_weekday_russian(date: datetime.date = None) -> str:
 
     # Возвращаем день недели (например, 'понедельник')
     return date.strftime('%A')
+
+
+
+sub_text = """🔓 Откройте весь потенциал нашего ИИ-бота — оформите подписку прямо здесь.
+
+Базовый минимум для всех :
+☑️ Бесплатные запросы к 3 LLM 
+☑️ 5 фото через лучшие генеративные сервисы! 
+
+
+Тарифы
+• <b>Smart — 490 ₽/мес: </b>
+✅ Безлимитный доступ к 6 LLM моделям, оптимально подбираемым под ваш запрос
+✅ Работа с файлами и голосовыми сообщениями 
+✅ Поиск в интернете
+✅ Функция памяти и напоминаний 
+✅ Генерация до 20 изображений 
+в месяц 
+
+• <b>Ultima — 990 ₽/мес: </b>
+✅ Приоритетный канал доступа к 10 LLM!
+✅ Безлимитная генерация изображений (GPT-images, Runway)
+✅ Все опции тарифа «smart»
+
+📅 Подписка активируется мгновенно, отменить можно в любой момент.
+
+😊 Выберите подходящий уровень и нажмите «Оплатить» — мы уже готовы помочь!"""
+
+
+tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "generate_image",
+                            "description": "Генерирует изображение по текстовому описанию",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "prompt": {
+                                        "type": "string",
+                                        "description": "Описание изображения для генерации"
+                                    },
+                                    "n": {
+                                        "type": "integer",
+                                        "description": "Количество изображений",
+                                        "default": 1
+                                    },
+                                    "size": {
+                                        "type": "string",
+                                        "description": "Размер изображения",
+                                        "default": "1024x1024"
+                                    },
+                                    "quality": {
+                                        "type": "string",
+                                        "description": "Качество изображения",
+                                        "default": "low"
+                                    },
+                                    "edit_existing_photo": {
+                                        "type": "boolean",
+                                        "description": "Редактировать существующее фото",
+                                        "default": False
+                                    }
+                                },
+                                "required": ["prompt"]
+                            }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "edit_image_only_with_peoples",
+                            "description": "Редактирует изображения с людьми используя Runway API",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "prompt": {
+                                        "type": "string",
+                                        "description": "Описание изменений изображения"
+                                    },
+                                    "ratio": {
+                                        "type": "string",
+                                        "description": "Соотношение сторон",
+                                        "default": "1920:1080"
+                                    }
+                                },
+                                "required": ["prompt"]
+                            }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "search_web",
+                            "description": "Поиск информации в интернете",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "query": {
+                                        "type": "string",
+                                        "description": "Поисковый запрос"
+                                    }
+                                },
+                                "required": ["query"]
+                            }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "add_notification",
+                            "description": "Добавляет уведомление на определенное время",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "when_send_str": {
+                                        "type": "string",
+                                        "description": "Дата и время отправки в формате YYYY-MM-DD HH:MM:SS"
+                                    },
+                                    "text_notification": {
+                                        "type": "string",
+                                        "description": "Текст уведомления"
+                                    }
+                                },
+                                "required": ["when_send_str", "text_notification"]
+                            }
+                        }
+                    }
+                ]

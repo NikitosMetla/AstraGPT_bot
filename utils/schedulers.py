@@ -1,12 +1,14 @@
 import asyncio
 import datetime
 import traceback
+import pytz
 
 from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from db.repository import users_repository, notifications_repository
-
+from db.repository import users_repository, notifications_repository, subscriptions_repository, \
+    type_subscriptions_repository
+from utils.payment_for_services import create_recurring_payment
 
 scheduler: AsyncIOScheduler | None = None
 
@@ -46,15 +48,62 @@ async def monitor_scheduler():
 
 
 async def send_notif(bot: Bot):
-    # users = await users_repository.select_all_users()
-    time_now = datetime.datetime.now()
-    # print(time_now)
+    # Получаем московское время
+    moscow_tz = pytz.timezone('Europe/Moscow')
+    utc_now = datetime.datetime.utcnow()
+    moscow_now = utc_now.replace(tzinfo=pytz.UTC).astimezone(moscow_tz)
+    
+    # Убираем timezone info для сравнения с naive datetime из БД
+    moscow_now_naive = moscow_now.replace(tzinfo=None)
+    
     notifications = await notifications_repository.select_all_active_notifications()
     for notif in notifications:
         try:
-            if (time_now.date() == notif.when_send.date() and time_now.time().hour + 3 == notif.when_send.time().hour and time_now.time().minute == notif.when_send.time().minute) or notif.when_send < time_now:
+            # Предполагаем, что notif.when_send хранится как московское время (naive datetime)
+            # Проверяем, наступило ли время для отправки уведомления
+            if moscow_now_naive >= notif.when_send:
                 await bot.send_message(chat_id=notif.user_id, text="<b>Напоминание:</b>\n\n" + notif.text_notification)
                 await notifications_repository.update_active_by_notification_id(notification_id=notif.id)
-        except:
+        except Exception:
             print(traceback.format_exc())
             continue
+
+
+#
+async def extend_users_sub(main_bot: Bot):
+    from bot import logger
+    users_subs = await subscriptions_repository.select_all_active_subscriptions()
+    now_datetime = datetime.datetime.now()
+    for sub in users_subs:
+        type_sub = await type_subscriptions_repository.get_type_subscription_by_id(type_id=sub.type_subscription_id)
+        if sub is not None and type_sub.plan_name != "Free":
+            try:
+                if sub.method_id is None:
+                    await subscriptions_repository.deactivate_subscription(subscription_id=sub.id)
+                    await main_bot.send_message(chat_id=sub.user_id,
+                                                text="Дорогой друг, не получилось автоматически продлить твою подписку."
+                                                     " Если ты видишь, что при этом у тебя"
+                                                     " списались деньги - обязательно пиши нашу поддержку по команде /support")
+                    continue
+
+                result = create_recurring_payment(method_id=sub.method_id,
+                                                  amount=type_sub.price)
+                if result:
+                    # try:
+                    max_generations = type_sub.max_generations
+                    await subscriptions_repository.replace_subscription(subscription_id=sub.id,
+                                                                        user_id=sub.user_id,
+                                                                        time_limit_subscription=30,
+                                                                        active=True,
+                                                                        type_sub_id=type_sub.id,
+                                                                        method_id=sub.method_id,
+                                                                        photo_generations=max_generations)
+
+                    await main_bot.send_message(chat_id=sub.user_id,
+                                                text="Дорогой друг, твоя подписка автоматически продлена на один месяц")
+            except:
+                logger.log("EXTEND_SUB_ERROR", traceback.format_exc())
+                await main_bot.send_message(chat_id=sub.user_id,
+                                            text="Дорогой друг, не получилось автоматически продлить твою подписку."
+                                                 " Если ты видишь, что при этом у тебя"
+                                                 " списались деньги - обязательно пиши нашу поддержку по команде /support")

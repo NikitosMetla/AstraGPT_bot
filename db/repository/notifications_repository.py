@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Sequence, Optional
 
-from sqlalchemy import select, or_, update
+from sqlalchemy import select, or_, update, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.engine import DatabaseEngine
@@ -60,6 +60,17 @@ class NotificationsRepository:
             session: AsyncSession
             async with session.begin():
                 sql = select(Notifications).where(or_(Notifications.user_id == user_id))
+                query = await session.execute(sql)
+                return query.scalars().all()
+
+    async def get_active_notifications_by_user_id(self, user_id: int) -> Sequence[Notifications]:
+        """Получает все активные уведомления конкретного пользователя"""
+        async with self.session_maker() as session:
+            session: AsyncSession
+            async with session.begin():
+                sql = select(Notifications).where(
+                    and_(Notifications.user_id == user_id, Notifications.active == True)
+                )
                 query = await session.execute(sql)
                 return query.scalars().all()
 

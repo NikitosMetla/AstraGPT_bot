@@ -7,8 +7,8 @@ from aiogram.fsm.state import any_state
 from aiogram.types import Message, CallbackQuery
 
 from data.keyboards import keyboard_for_pay, cancel_keyboard, buy_sub_keyboard, subscriptions_keyboard, \
-    unlink_card_keyboard
-from db.repository import operation_repository, type_subscriptions_repository
+    unlink_card_keyboard, keyboard_for_pay_generations
+from db.repository import operation_repository, type_subscriptions_repository, generations_packets_repository
 from db.repository import users_repository, subscriptions_repository
 from settings import InputMessage, is_valid_email
 from utils.payment_for_services import create_payment, check_payment, get_payment
@@ -111,6 +111,7 @@ async def check_payment_callback(message: types.CallbackQuery, state: FSMContext
     data = message.data.split("|")
     operation_id = data[1]
     sub_type_id = int(data[3])
+    user_id = message.from_user.id
     sub_type = await type_subscriptions_repository.get_type_subscription_by_id(type_id=sub_type_id)
     # user = await users_repository.get_user_by_user_id(message.from_user.id)
     operation = await operation_repository.get_operation_info_by_id(int(operation_id))
@@ -118,12 +119,22 @@ async def check_payment_callback(message: types.CallbackQuery, state: FSMContext
     payment = get_payment(payment_id)
     if await check_payment(payment_id):
         await operation_repository.update_paid_by_operation_id(payment_id)
-        await subscriptions_repository.add_subscription(user_id=message.from_user.id,
-                                                        time_limit_subscription=30,
-                                                        active=True,
-                                                        type_sub_id=sub_type_id,
-                                                        method_id=payment.payment_method.id,
-                                                        photo_generations=sub_type.max_generations)
+        user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user_id)
+        if user_sub is None:
+            await subscriptions_repository.add_subscription(user_id=user_id,
+                                                            time_limit_subscription=30,
+                                                            active=True,
+                                                            type_sub_id=sub_type_id,
+                                                            method_id=payment.payment_method.id,
+                                                            photo_generations=sub_type.max_generations)
+        else:
+            await subscriptions_repository.replace_subscription(subscription_id=user_sub.id,
+                                                                user_id=user_id,
+                                                                time_limit_subscription=30,
+                                                                active=True,
+                                                                type_sub_id=sub_type_id,
+                                                                method_id=payment.payment_method.id,
+                                                                photo_generations=sub_type.max_generations)
         await message.message.delete()
         await message.message.answer("Подписка успешно оформлена ✅")
     else:
@@ -132,6 +143,57 @@ async def check_payment_callback(message: types.CallbackQuery, state: FSMContext
             keyboard = await keyboard_for_pay(operation_id=operation_id, url=payment.url, time_limit=30,
                                               type_sub_id=sub_type_id)
             await message.message.edit_text("Пока мы не видим, чтобы оплата была произведена( Погоди"
+                                            " еще немного времени и убедись,"
+                                            " что ты действительно произвел оплату. Если что-то пошло не так, свяжись"
+                                            " с нами с помощью команды /support",
+                                            reply_markup=keyboard.as_markup())
+        finally:
+            return
+
+
+@payment_router.callback_query(F.data.startswith("more_generations|"))
+async def buy_generations_callback(call: types.CallbackQuery):
+    call_data = call.data.split("|")
+    generations_packet_id = int(call_data[1])
+    generations_packet = await generations_packets_repository.get_generations_packet_by_id(packet_id=generations_packet_id)
+    generations = generations_packet.generations
+    price = generations_packet.price
+    user = await users_repository.get_user_by_user_id(user_id=call.from_user.id)
+    payment = await create_payment(user.email, amount=price, description="Покупка дополнительных генераций фото")
+    await operation_repository.add_operation(operation_id=payment[0], user_id=call.from_user.id, is_paid=False,
+                                             url=payment[1])
+    operation = await operation_repository.get_operation_by_operation_id(payment[0])
+    keyboard = await keyboard_for_pay_generations(operation_id=operation.id, url=payment[1], generations=generations)
+    await call.message.answer(text=f'✨Для дальнейшей работы бота нужно приобрести {generations} дополнительных генераций'
+                                   f' за {price} рублей.\n\nПосле проведения платежа нажми на кнопку "Оплата произведена",'
+                                   ' чтобы подтвердить платеж', reply_markup=keyboard.as_markup())
+    try:
+        await call.message.delete()
+    finally:
+        return
+
+
+@payment_router.callback_query(F.data.startswith("generations_is_paid|"), any_state)
+async def check_payment_callback(message: types.CallbackQuery, state: FSMContext, bot: Bot):
+    operation_id = message.data.split("|")[1]
+    operation = await operation_repository.get_operation_info_by_id(int(operation_id))
+    payment_id = operation.operation_id
+    generations = int(message.data.split("|")[2])
+    if await check_payment(payment_id):
+        await operation_repository.update_paid_by_operation_id(payment_id)
+        payment = get_payment(payment_id)
+        print(payment.payment_method.id)
+        active_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=message.from_user.id)
+        await subscriptions_repository.update_generations(subscription_id=active_sub.id, new_generations=generations)
+        await message.message.delete()
+        delete_message = await message.message.answer(f"{generations} генераций успешно приобретены ✅")
+        await asyncio.sleep(5)
+        await delete_message.delete()
+    else:
+        try:
+            payment = await operation_repository.get_operation_by_operation_id(payment_id)
+            keyboard = await keyboard_for_pay_generations(operation_id=operation.id, url=payment[1], generations=generations)
+            await message.message.edit_text("❌Пока мы не видим, чтобы оплата была произведена( Погоди"
                                             " еще немного времени и убедись,"
                                             " что ты действительно произвел оплату. Если что-то пошло не так, свяжись"
                                             " с нами с помощью команды /support",

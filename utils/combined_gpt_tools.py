@@ -22,10 +22,10 @@ from openai import (
     PermissionDeniedError,
     RateLimitError, BadRequestError, )
 
-from data.keyboards import subscriptions_keyboard
-from settings import get_current_datetime_string, print_log
+from data.keyboards import subscriptions_keyboard, more_generations_keyboard
+from settings import get_current_datetime_string, print_log, get_current_bot
 from utils import web_search_agent
-from utils.create_notification import schedule_notification, NotificationSchedulerError
+from utils.create_notification import schedule_notification, NotificationSchedulerError, NotificationLimitError
 from utils.parse_gpt_text import sanitize_with_links
 from utils.runway_api import generate_image_bytes
 
@@ -35,6 +35,10 @@ _thread_locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
 class NoSubscription(Exception):
+    """Ошибка отсутствия подписки для функции"""
+    pass
+
+class NoGenerations(Exception):
     """Ошибка отсутствия подписки для функции"""
     pass
 
@@ -184,7 +188,8 @@ def _image_content(b: bytes, detail: str = "auto") -> dict:
 
 from os import getenv as _getenv
 from db.models import Users
-from db.repository import users_repository, subscriptions_repository, type_subscriptions_repository
+from db.repository import users_repository, subscriptions_repository, type_subscriptions_repository, \
+    generations_packets_repository, notifications_repository
 
 api_key = OPENAI_API_KEY
 
@@ -303,6 +308,13 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
         audio_bytes: io.BytesIO | None = None,
         user_data: Users | None = None,
     ):
+        final_content = {
+            "text": None,
+            "image_files": [],
+            "files": [],
+            "audio_file": None
+        }
+        main_bot = get_current_bot()
         from bot import logger
         from settings import get_weekday_russian
         """Отправляет пользовательский запрос с опциональными вложениями."""
@@ -321,7 +333,8 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
             text = (text or "Вот информация")
             # print(document_bytes)
             if not any([text, image_bytes, document_bytes, audio_bytes]):
-                return None
+                final_content["text"] = "Не получен контент для обработки"
+                return final_content
             # print(text)
             content, attachments, file_ids = await self._build_content(
                 text,
@@ -333,6 +346,7 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
             if file_ids:
                 await self._sync_vector_store(thread_id, file_ids)
             # print(attachments)
+            run_id = None
             try:
                 await self.client.beta.threads.messages.create(
                     thread_id=thread_id,
@@ -345,29 +359,39 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                 run = await self._safe_create_run(
                     thread_id=thread_id,
                     assistant_id=self.assistant.id,
-                    instructions=f"Сегодня - {get_current_datetime_string()}\n\n по Москве.День недели - {get_weekday_russian()} "
-                                 f"Учитывай эту информацию,"
-                                 f" если пользователь просит поставить уведомление\n\nОсновные инструкции:\n" + self.assistant.instructions +
-                                 f"\n\nИнформация о пользователе:\n{about_user}" if about_user else f"Сегодня - {get_current_datetime_string()}\n\n"
-                                                                                                    f" по Москве.День недели - {get_weekday_russian()}" +
-                                                               self.assistant.instructions,
+                    instructions=f"ВАЖНАЯ ИНФОРМАЦИЯ О ВРЕМЕНИ:\n"
+                                f"Текущие дата и время в Москве: {get_current_datetime_string()}\n"
+                                f"Сегодня {get_weekday_russian()}\n"
+                                f"ВСЕ уведомления и напоминания должны устанавливаться в московском времени!\n"
+                                f"Примеры относительных дат:\n"
+                                f"- 'завтра' = следующий день после сегодняшнего\n"
+                                f"- 'послезавтра' = через два дня\n"  
+                                f"- 'на следующей неделе в понедельник' = ближайший понедельник после текущей недели\n"
+                                f"- 'через 30 минут' = добавить 30 минут к текущему времени\n\n"
+                                f"Основные инструкции:\n{self.assistant.instructions}" +
+                                (f"\n\nИнформация о пользователе:\n{about_user}" if about_user else ""),
                     model=user.model_type,
                     timeout=15.0,
                 )
+                run_id = run.id
                 # print("Сегодня - ", get_current_datetime_string())
                 # ---------------- NEW: обработка image‑tools ----------------
                 if run.status == "requires_action":
-                    from bot import main_bot
+                    from settings import sub_text
                     user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user.user_id)
+                    if user_sub:
+                        type_sub = await type_subscriptions_repository.get_type_subscription_by_id(type_id=user_sub.type_subscription_id)
+                    else:
+                        type_sub = None
                     sub_types = await type_subscriptions_repository.select_all_type_subscriptions()
-                    if user_sub is None:
-                        from test_bot import test_bot
-                        from settings import sub_text
-                        await test_bot.send_message(chat_id=user.user_id,
-                                                    text="🚨К сожалению, данная функция, которую ты"
-                                                " пытаешься использовать доступна только по подписке\n\n" + sub_text,
-                                                    reply_markup=subscriptions_keyboard(sub_types).as_markup())
-                        raise NoSubscription(f"User {user.user_id} dont has active subscription")
+                    if user_sub is None or (type_sub is not None and type_sub.plan_name == "Free"):
+                        tools_names = [tc.function.name for tc in run.required_action.submit_tool_outputs.tool_calls]
+                        if "edit_image_only_with_peoples" not in tools_names and "generate_image" not in tools_names:
+                            await main_bot.send_message(chat_id=user.user_id,
+                                                        text="🚨К сожалению, данная функция, которую ты"
+                                                    " пытаешься использовать доступна только по подписке\n\n" + sub_text,
+                                                        reply_markup=subscriptions_keyboard(sub_types).as_markup())
+                            raise NoSubscription(f"User {user.user_id} dont has active subscription")
                     delete_message = None
                     for tc in run.required_action.submit_tool_outputs.tool_calls:
                         if tc.function.name == "search_web":
@@ -379,7 +403,19 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                                 chat_id=user.user_id)
                         else:
                             if user_sub.photo_generations <= 0:
-                                return "Дорогой друг, у тебя закончились генерации изображений по твоему плану"
+                                generations_packets = await generations_packets_repository.select_all_generations_packets()
+                                from settings import buy_generations_text
+                                if type_sub.plan_name == "Free":
+                                    await main_bot.send_message(chat_id=user.user_id,
+                                                                text="🚨К сожалению, данная функция, которую ты"
+                                                                     " пытаешься использовать доступна только по подписке\n\n" + sub_text,
+                                                                reply_markup=subscriptions_keyboard(
+                                                                    sub_types).as_markup())
+                                    raise NoSubscription(f"User {user.user_id} dont has active subscription")
+                                await main_bot.send_message(chat_id=user_id, text=buy_generations_text,
+                                                            reply_markup=more_generations_keyboard(generations_packets).as_markup())
+                                # await process_assistant_run(message_response.tool_calls, user_id=user.user_id)
+                                raise NoGenerations(f"User {user.user_id} dont has generations")
                             delete_message = await main_bot.send_message(chat_id=user.user_id,
                                                                          text="🎨Начал работу над изображением, немного магии…")
                         break
@@ -395,18 +431,27 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                                 # from bot import logger
                                 # logger.error("Не смогли сгенерировать изображение или обработать запрос😔\n\nВозможно,"
                                 #         " ты попросил что-то, что выходит за рамки норм", result)
-                                return ("Не смогли сгенерировать изображение или обработать запрос😔\n\nВозможно,"
+                                final_content["text"] = ("Не смогли сгенерировать изображение или обработать запрос😔\n\nВозможно,"
                                         " ты попросил что-то, что выходит за рамки норм")
+                                return final_content
                         messages = await self.client.beta.threads.messages.list(thread_id=thread_id)
                         await delete_message.delete()
                         first_msg = messages.data[0]
                         if web_answer:
-                            return sanitize_with_links(web_answer)
+                            final_content["text"] = sanitize_with_links(web_answer)
+                            return final_content
                         if notification:
-                            return sanitize_with_links(notification)
+                            final_content["text"] = sanitize_with_links(notification)
+                            return final_content
                         elif len(result_images) != 0:
-                            return {"text": first_msg.content[0].text.value if hasattr(first_msg.content[0], "text") else "Сгенерировал изображение",
-                                    "images": result_images}
+                            await subscriptions_repository.use_generation(subscription_id=user_sub.id)
+                            final_content["text"] = sanitize_with_links(first_msg.content[0]
+                                                                        .text
+                                                                        .value if hasattr(first_msg.content[0],
+                                                                                          "text")
+                                                                        else "Сгенерировал изображение")
+                            final_content["image_files"] = result_images
+                            return final_content
                     except Exception:
                         print(traceback.format_exc())
                         await delete_message.delete()
@@ -416,9 +461,10 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                             f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}"
                         )
                         print_log(message=f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}")
-                        return ("Произошла непредвиденная ошибка, попробуй еще раз!"
-                                " Твой запрос может содержать контент, который"
-                                " не разрешен нашей системой безопасности")
+                        final_content["text"] = ("Произошла непредвиденная ошибка, попробуй еще раз!"
+                                                " Твой запрос может содержать контент, который"
+                                                " не разрешен нашей системой безопасности")
+                        return final_content
                 if run.status == "completed":
                     messages = await self.client.beta.threads.messages.list(thread_id=thread_id)
                     if messages.data[0].content[0].type == "image_file":
@@ -428,7 +474,8 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                         file_obj = await self.client.files.retrieve(file_id=file_id)
                         # pprint.pprint(file_obj.json)
                         data = await self.client.files.content(file_id)
-                        return {"filename": file_obj.filename + ".png", "bytes": await data.aread()}
+                        final_content["files"] = [{"filename": file_obj.filename + ".png", "bytes": await data.aread()}]
+                        return final_content
                     # message_text = _sanitize(
                     #     messages.data[0].content[0].text.value
                     # )
@@ -440,36 +487,44 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                             file_id = content.file_id
                             file_obj = await self.client.files.retrieve(file_id=file_id)
                             data = await self.client.files.content(file_id)
-                            return {"filename": file_obj.filename, "bytes": await data.aread()}
+                            final_content["files"] = [{"filename": file_obj.filename, "bytes": await data.aread()}]
+                            return final_content
                     # files = messages.data[0].file_ids
                     # message_text = re.sub(r"【[^】]+】", "", message_text).strip()
                     message_text = messages.data[0].content[0].text.value
                     if with_audio_transcription:
                         audio_data = await self.generate_audio_by_text(message_text)
-                        return sanitize_with_links(message_text), audio_data
-                    return sanitize_with_links(message_text)
+                        final_content["text"] = sanitize_with_links(message_text)
+                        final_content["audio_file"] = audio_data
+                        return final_content
+                    final_content["text"] = sanitize_with_links(message_text)
+                    return final_content
                 # print(run.json)
                 logger.log(
                     "GPT_ERROR",
                     f"ЗАКОНЧИЛИСЬ БАБКИ или другая ошибка gpt: {run.json()}"
                 )
-                return ("Произошла непредвиденная ошибка, попробуй еще раз! Cейчас наблюдаются сбои в системе")
+                final_content["text"] = ("Произошла непредвиденная ошибка, попробуй еще раз! Cейчас наблюдаются сбои в системе")
+                return final_content
             except NoSubscription:  # 1. пропускаем тарифные ошибки
                 raise
+            except NoGenerations:  # 1. пропускаем тарифные ошибки
+                raise
             except Exception:
-                traceback.print_exc()
-                try:
-                    await self.client.beta.threads.runs.cancel(run_id=run.id, thread_id=thread_id)
-                finally:
+                # traceback.print_exc()
                     # При фатальной ошибке переинициализируем клиента, чтобы попытаться восстановить соединение
-                    await self._reset_client()
-                    logger.log(
-                        "GPT_ERROR",
-                        f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}"
-                    )
-                    print_log(message=f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}")
-                    return ("Произошла непредвиденная ошибка, попробуй еще раз! Твой запрос может содержать"
-                            " контент, который не разрешен нашей системой безопасности")
+                await self._reset_client()
+                logger.log(
+                    "GPT_ERROR",
+                    f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}"
+                )
+                print_log(message=f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}")
+                final_content["text"] = ("Произошла непредвиденная ошибка, попробуй еще раз! Твой запрос может содержать"
+                        " контент, который не разрешен нашей системой безопасности")
+                return final_content
+            finally:
+                await self._safe_cancel_run(thread_id=thread_id, run_id=run_id)
+
 
     # -------- вспомогательные методы --------
     @staticmethod
@@ -609,6 +664,7 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                 })
         #
         content.append({"type": "text", "text": f"Сегодня - {get_current_datetime_string()}\n\n по Москве.\n\n" + text})
+        content = content[-10:] if len(content) > 10 else content
         return content, attachments, doc_file_ids
 
     async def _wait_for_active_run(
@@ -621,7 +677,7 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
         Обеспечивает последовательную обработку запросов (очередь).
         """
         ACTIVE = {"queued", "in_progress", "requires_action", "cancelling", "active"}
-        retries = 360
+        retries = 180
         while retries > 0:
             runs = await self.client.beta.threads.runs.list(
                 thread_id=thread_id,
@@ -634,14 +690,28 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                 continue
             break
         else:
-            runs = await self.client.beta.threads.runs.list(
-                thread_id=thread_id,
-                limit=100,
-                order="desc",  # последний первым
-            )
-            for run in runs.data:
-                if any(r.status in ACTIVE for r in runs.data):
-                    await self.client.beta.threads.runs.cancel(run_id=run.id, timeout=10)
+            await self._cancel_active_runs(thread_id=thread_id)
+
+    async def _cancel_active_runs(self, thread_id: str):
+        ACTIVE = {"queued", "in_progress", "requires_action", "cancelling", "active"}
+        runs = await self.client.beta.threads.runs.list(
+            thread_id=thread_id,
+            limit=100,
+            order="desc",  # последний первым
+        )
+        for run in runs.data:
+            if any(r.status in ACTIVE for r in runs.data):
+                await self._safe_cancel_run(run_id=run.id, thread_id=thread_id)
+
+    async def _safe_cancel_run(self, thread_id: str, run_id: str | None = None):
+        if run_id is None:
+            return
+        for i in range(3):
+            try:
+                await self.client.beta.threads.runs.cancel(run_id=run_id, timeout=10, thread_id=thread_id)
+                break
+            except:
+                await asyncio.sleep(1)
 
     async def _reset_client(self):
         """Переинициализирует клиента OpenAI и сбрасывает кеш ассистента."""
@@ -676,7 +746,6 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int) -> Any:
             # например, обрезать до первого `}` и допarse
             first_obj = args_raw.split('}', 1)[0] + '}'
             args = json.loads(first_obj)
-    from bot import main_bot
     user = await users_repository.get_user_by_user_id(user_id=user_id)
     photo_bytes = []
     if name == "add_notification":
@@ -689,6 +758,11 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int) -> Any:
                                         when_send_str=when_send_str,
                                         text_notification=text_notification)
             return f"Отлично, добавили уведомление на {when_send_str} по московскому времени\n\nТекст уведомления: {text_notification}"
+        except NotificationLimitError as e:
+            # print(traceback.format_exc())
+            active_notifications = await notifications_repository.get_active_notifications_by_user_id(user_id)
+            return (f"Превышен лимит уведомлений. У вас уже есть {len(active_notifications)} активных уведомлений. "
+                    f"Максимальное количество: 10. Дождитесь срабатывания существующих уведомлений ")
         except NotificationSchedulerError:
             print(traceback.format_exc())
             return "Нельзя запланировать уведомление на прошлое время или неверный формат даты/времени"
@@ -701,6 +775,7 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int) -> Any:
         return result
     if user.last_image_id is not None:
         for photo_id in user.last_image_id.split(", "):
+            main_bot = get_current_bot()
             # print(photo_id)
             photo_bytes_io = io.BytesIO()
             await main_bot.download(photo_id, destination=photo_bytes_io)

@@ -7,7 +7,7 @@ from aiogram import BaseMiddleware
 from aiogram.enums import ParseMode
 from aiogram.types import Message, CallbackQuery, TelegramObject
 
-from db.repository import users_repository, admin_repository, events_repository
+from db.repository import users_repository, admin_repository, events_repository, subscriptions_repository
 from settings import MESSAGE_SPAM_TIMING
 from bot import logger
 
@@ -82,7 +82,10 @@ class CombinedMiddleware(BaseMiddleware):
                     await users_repository.add_user(user_id=user_id, username=event.from_user.username)
                     logger.log("JOIN", f"{user_id} | @{event.from_user.username}")
                     self.log(f"New user registered: user_id={user_id}, username=@{event.from_user.username}")
-
+                user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user_id)
+                if user_sub is None:
+                    await subscriptions_repository.add_subscription(type_sub_id=2, user_id=user_id,
+                                                                    photo_generations=3, time_limit_subscription=30)
                 # Предыдущее состояние пользователя в хранилище
                 check = self.storage.get(user_id)
 
@@ -92,7 +95,7 @@ class CombinedMiddleware(BaseMiddleware):
                     self.storage[user_id]["timestamp"] = time.time()
                     self.log(f"Message skipped spam‑check (same media_group_id) for user_id={user_id}")
                     return await handler(event, data)
-
+                #
                 # ➋ Базовая анти‑спам‑логика -----------------------------------------
                 if check:
                     # Уже активен блок? — игнорируем

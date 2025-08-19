@@ -15,7 +15,9 @@ def is_subscriber(func):
     async def wrapper(message: types.Message | types.CallbackQuery, state: FSMContext, bot: Bot, **kwargs):
         # print("========================= " + func.__name__ + " ============================")
         try:
-            if await subscriptions_repository.get_active_subscription_by_user_id(message.from_user.id):
+            user_sub = await subscriptions_repository.get_active_subscription_by_user_id(message.from_user.id)
+            type_sub = await type_subscriptions_repository.get_type_subscription_by_id(type_id=user_sub.type_subscription_id)
+            if user_sub and type_sub.plan_name != "Free":
                 # print('Проверка на подписку пройдена')
                 return await func(message, state, bot, **kwargs)
             elif type(message) == types.Message:

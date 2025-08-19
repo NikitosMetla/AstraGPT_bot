@@ -1,6 +1,7 @@
 from .admins import Admins
 from .ai_requests import AiRequests
 from .events import Events
+from .generations_packets import GenerationsPackets
 from .notifications import Notifications
 from .operations import Operations
 from .reposts import Reposts
@@ -21,5 +22,6 @@ __all__ = ['Users',
            'ReferralSystem',
            'PromoActivations',
            'Events',
-           'TypeSubscriptions'
+           'TypeSubscriptions',
+           'GenerationsPackets'
            ]

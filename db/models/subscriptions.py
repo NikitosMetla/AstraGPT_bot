@@ -18,8 +18,9 @@ class Subscriptions(BaseModel, CleanModel):
     active = Column(Boolean, nullable=False, default=True)
     # send_notification = Column(Boolean, nullable=False, default=False, unique=False)
     type_subscription_id = Column(BigInteger, ForeignKey('type_subscriptions.id'), nullable=False, unique=False)
-    method_id = Column(String, nullable=False, unique=False)
+    method_id = Column(String, nullable=True, unique=False)
     photo_generations = Column(BigInteger, nullable=False, default=0)
+    last_billing_date = Column(DateTime, nullable=False, default=func.now())
 
     @property
     def stats(self) -> str:

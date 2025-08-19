@@ -8,12 +8,11 @@ from aiogram.fsm.state import any_state
 from aiogram.types import InlineKeyboardButton, BufferedInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from bot import main_bot
 from data.keyboards import admin_keyboard, add_delete_admin, cancel_keyboard, back_to_bots_keyboard, \
     db_tables_keyboard, type_users_mailing_keyboard, statistics_keyboard, confirm_send_mailing
 from db.repository import admin_repository, users_repository, ai_requests_repository, subscriptions_repository, \
     referral_system_repository, events_repository
-from settings import InputMessage, business_connection_id
+from settings import InputMessage, business_connection_id, get_current_bot
 from utils.generate_promo import generate_single_promo_code
 from utils.get_table_db_to_excel import export_table_to_memory
 from utils.is_main_admin import is_main_admin
@@ -194,6 +193,7 @@ async def confirm_mailing_message(call: types.CallbackQuery, state: FSMContext, 
     else:
         with_usernames = False
     users = await users_repository.select_all_users()
+    main_bot = get_current_bot()
     if is_confirm:
         await message.answer(text="Начали рассылку по пользователями с твоим отправленным фото")
         await call.message.delete()

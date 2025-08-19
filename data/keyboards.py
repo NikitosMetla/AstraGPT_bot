@@ -43,10 +43,21 @@ async def keyboard_for_pay(operation_id: str, url: str, time_limit: int, type_su
 def subscriptions_keyboard(type_subs: list):
     keyboard = InlineKeyboardBuilder()
     for type_sub in type_subs:
+        if type_sub.plan_name == "Free":
+            continue
         keyboard.row(InlineKeyboardButton(text=f"{type_sub.plan_name} - {type_sub.price} ₽/мес",
                                           callback_data=f"choice_sub|{type_sub.id}"))
     # keyboard.row(menu_button)
     return keyboard
+
+
+def more_generations_keyboard(generations_packets: list):
+    keyboard = InlineKeyboardBuilder()
+    for generations_packet in generations_packets:
+        keyboard.row(InlineKeyboardButton(text=f"{generations_packet.generations}"
+                                               f" генераций - {generations_packet.price} ₽",
+                                          callback_data=f"more_generations|{generations_packet.id}"))
+    return  keyboard
 
 
 menu_button = InlineKeyboardButton(text="В меню", callback_data="start_menu")
@@ -130,3 +141,11 @@ def confirm_send_mailing():
     keyboard.row(InlineKeyboardButton(text="Отравить", callback_data=f"confirm_send_mailing|yes"))
     keyboard.row(InlineKeyboardButton(text="Отменить", callback_data="confirm_send_mailing|no"))
     return keyboard
+
+
+async def keyboard_for_pay_generations(operation_id: str, url: str, generations: int):
+    pay_ai_keyboard = InlineKeyboardBuilder()
+    pay_ai_keyboard.row(InlineKeyboardButton(text="Оплатить", web_app=WebAppInfo(url=url)))
+    pay_ai_keyboard.row(InlineKeyboardButton(text="Оплата произведена",
+                                             callback_data=f"generations_is_paid|{operation_id}|{generations}"))
+    return pay_ai_keyboard

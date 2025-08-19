@@ -14,7 +14,7 @@ from db.repository import admin_repository
 from handlers.user_handler import standard_router
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from settings import storage_bot, main_bot_token
+from settings import storage_bot, main_bot_token, set_current_bot
 from utils.schedulers import send_notif, safe_send_notif, job_error_listener, scheduler, monitor_scheduler
 
 
@@ -56,7 +56,7 @@ def loguru_sink_wrapper(message):
         logger.error("Event loop is not initialized, cannot notify admins")
 
 async def main():
-
+    set_current_bot(main_bot)
     global _loop
     _loop = asyncio.get_running_loop()
     from datetime import datetime
@@ -70,6 +70,7 @@ async def main():
     logger.level("STOPPED", no=25, color="<blue>")
     logger.level("ERROR_HANDLER", no=60, color="<red>")
     logger.level("GPT_ERROR", no=65, color="<red>")
+    logger.level("EXTEND_SUB_ERROR", no=65, color="<red>")
     # … другие уровни …
 
     # Синк для START_BOT

@@ -8,3 +8,4 @@ aiogram_media_group
 agents
 asyncpg
 greenlet
+pytz~=2023.3

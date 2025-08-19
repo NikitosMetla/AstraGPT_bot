@@ -22,13 +22,14 @@ from openai import (
     PermissionDeniedError,
     RateLimitError, BadRequestError, )
 
-from data.keyboards import subscriptions_keyboard
+from data.keyboards import subscriptions_keyboard, more_generations_keyboard
+from db.repository import generations_packets_repository
 from settings import get_current_datetime_string, print_log
 from utils import web_search_agent
 from utils.create_notification import schedule_notification, NotificationSchedulerError
 from utils.parse_gpt_text import sanitize_with_links
 from utils.runway_api import generate_image_bytes
-from utils.combined_gpt_tools import AsyncOpenAIImageClient, NoSubscription
+from utils.combined_gpt_tools import AsyncOpenAIImageClient, NoSubscription, NoGenerations
 
 # completions_gpt_tools.py
 
@@ -190,174 +191,181 @@ class GPTCompletions:  # noqa: N801 – сохраняем схожее имя �
             # Убедимся, что указанный thread существует, иначе создадим новый
             thread_id = await self.messages_manager.ensure_thread_exists(thread_id)
 
-        lock = await get_thread_lock(thread_id)
-        async with lock:  # ⬅️  ВСЕ операции с thread – под замком
-            try:
-                # Информация о пользователе уже получена выше
-                about_user = user.context if user else ""
+        # lock = await get_thread_lock(thread_id)
+        # async with lock:  # ⬅️  Блокировка по thread больше не используется
+        try:
+            # Информация о пользователе уже получена выше
+            about_user = user.context if user else ""
+            
+            text = (text or "Вот информация")
+            
+            if not any([text, image_bytes, document_bytes, audio_bytes]):
+                return None
+
+            # Формируем контент сообщения
+            content_parts = []
+            attachments = []
+            
+            # Обрабатываем изображения
+            if image_bytes:
+                for idx, img_io in enumerate(image_bytes):
+                    img_io.seek(0)
+                    img_data = img_io.read()
+                    base64_image = base64.b64encode(img_data).decode('utf-8')
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{base64_image}"
+                        }
+                    })
+
+            # Добавляем текст
+            full_text = f"Сегодня - {get_current_datetime_string()}\n\n по Москве.\n\n"
+            if about_user:
+                full_text += f"Информация о пользователе:\n{about_user}\n\n"
+            full_text += text
+
+            content_parts.insert(0, {
+                "type": "text", 
+                "text": full_text
+            })
+
+            # Загружаем историю сообщений
+            history_messages = await self.messages_manager.get_thread_messages(thread_id, limit=10)
+            
+            # Формируем системное сообщение
+            system_message = {
+                "role": "system",
+                "content": f"Сегодня - {get_current_datetime_string()} по Москве. День недели - {get_weekday_russian()}. "
+                           f"Ты - умный помощник AstraGPT. Помогай пользователю с различными задачами."
+            }
+
+            # Формируем полный список сообщений для API
+            messages = [system_message] + history_messages + [{
+                "role": "user",
+                "content": content_parts if len(content_parts) > 1 else content_parts[0]["text"]
+            }]
+
+            # Определяем доступные функции
+            from settings import tools
+
+            # Отправляем запрос к Chat Completions API
+            response = await _retry(
+                self.client.chat.completions.create,
+                model=user.model_type if user else "gpt-4o-mini",
+                messages=messages,
+                # tools=tools,
+                # tool_choice="auto",
+                timeout=30.0
+            )
+
+            message_response = response.choices[0].message
+            
+            # Обрабатываем tool calls если они есть
+            if message_response.tool_calls:
+                # Проверяем подписку пользователя
+                user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user.user_id)
+                sub_types = await type_subscriptions_repository.select_all_type_subscriptions()
+                if user_sub is None:
+                    from test_bot import test_bot
+                    from settings import sub_text
+                    await test_bot.send_message(chat_id=user.user_id,
+                                                text="🚨К сожалению, данная функция, которую ты"
+                                            " пытаешься использовать доступна только по подписке\n\n" + sub_text,
+                                                reply_markup=subscriptions_keyboard(sub_types).as_markup())
+                    await process_tool_calls(message_response.tool_calls, user_id=user.user_id)
+                    raise NoSubscription(f"User {user.user_id} dont has active subscription")
                 
-                text = (text or "Вот информация")
+                # Показываем индикатор загрузки
+                delete_message = None
+                from bot import main_bot
                 
-                if not any([text, image_bytes, document_bytes, audio_bytes]):
-                    return None
-
-                # Формируем контент сообщения
-                content_parts = []
-                attachments = []
-                
-                # Обрабатываем изображения
-                if image_bytes:
-                    for idx, img_io in enumerate(image_bytes):
-                        img_io.seek(0)
-                        img_data = img_io.read()
-                        base64_image = base64.b64encode(img_data).decode('utf-8')
-                        content_parts.append({
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{base64_image}"
-                            }
-                        })
-
-                # Добавляем текст
-                full_text = f"Сегодня - {get_current_datetime_string()}\n\n по Москве.\n\n"
-                if about_user:
-                    full_text += f"Информация о пользователе:\n{about_user}\n\n"
-                full_text += text
-
-                content_parts.insert(0, {
-                    "type": "text", 
-                    "text": full_text
-                })
-
-                # Загружаем историю сообщений
-                history_messages = await self.messages_manager.get_thread_messages(thread_id, limit=10)
-                
-                # Формируем системное сообщение
-                system_message = {
-                    "role": "system",
-                    "content": f"Сегодня - {get_current_datetime_string()} по Москве. День недели - {get_weekday_russian()}. "
-                               f"Ты - умный помощник AstraGPT. Помогай пользователю с различными задачами."
-                }
-
-                # Формируем полный список сообщений для API
-                messages = [system_message] + history_messages + [{
-                    "role": "user",
-                    "content": content_parts if len(content_parts) > 1 else content_parts[0]["text"]
-                }]
-
-                # Определяем доступные функции
-                from settings import tools
-
-                # Отправляем запрос к Chat Completions API
-                response = await _retry(
-                    self.client.chat.completions.create,
-                    model=user.model_type if user else "gpt-4o-mini",
-                    messages=messages,
-                    tools=tools,
-                    tool_choice="auto",
-                    timeout=30.0
-                )
-
-                message_response = response.choices[0].message
-                
-                # Обрабатываем tool calls если они есть
-                if message_response.tool_calls:
-                    # Проверяем подписку пользователя
-                    user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user.user_id)
-                    sub_types = await type_subscriptions_repository.select_all_type_subscriptions()
-                    if user_sub is None:
-                        from test_bot import test_bot
-                        from settings import sub_text
-                        await test_bot.send_message(chat_id=user.user_id,
-                                                    text="🚨К сожалению, данная функция, которую ты"
-                                                " пытаешься использовать доступна только по подписке\n\n" + sub_text,
-                                                    reply_markup=subscriptions_keyboard(sub_types).as_markup())
-                        raise NoSubscription(f"User {user.user_id} dont has active subscription")
-                    
-                    # Показываем индикатор загрузки
-                    delete_message = None
-                    from bot import main_bot
-                    
-                    tool_call = message_response.tool_calls[0]
-                    if tool_call.function.name == "search_web":
-                        delete_message = await main_bot.send_message(text="🔍Начал поиск в интернете, анализирую страницы...",
-                                                                     chat_id=user.user_id)
-                    elif tool_call.function.name == "add_notification":
-                        delete_message = await main_bot.send_message(
-                            text="🖌Начал настраивать напоминание, это не займет много времени...",
-                            chat_id=user.user_id)
-                    else:
-                        if user_sub.photo_generations <= 0:
-                            return "Дорогой друг, у тебя закончились генерации изображений по твоему плану"
-                        delete_message = await main_bot.send_message(chat_id=user.user_id,
-                                                                     text="🎨Начал работу над изображением, немного магии…")
-                    
-                    try:
-                        # Обрабатываем tool calls
-                        tool_results = await process_tool_calls(message_response.tool_calls, user_id=user.user_id)
-                        result_images = tool_results.get("final_images", [])
-                        web_answer = tool_results.get("web_answer")
-                        notification = tool_results.get("notif_answer")
-                        
-                        if len(result_images) == 0 and web_answer is None and notification is None:
-                            await delete_message.delete()
-                            return ("Не смогли сгенерировать изображение или обработать запрос😔\n\nВозможно,"
-                                    " ты попросил что-то, что выходит за рамки норм")
-                        
-                        await delete_message.delete()
-                        
-                        if web_answer:
-                            # Сохраняем в thread
-                            await self.messages_manager.save_messages_to_thread(thread_id, text, web_answer)
-                            return sanitize_with_links(web_answer)
-                        
-                        if notification:
-                            # Сохраняем в thread
-                            await self.messages_manager.save_messages_to_thread(thread_id, text, notification)
-                            return sanitize_with_links(notification)
-                        
-                        elif len(result_images) != 0:
-                            final_text = "Сгенерировал изображение"
-                            # Сохраняем в thread
-                            await self.messages_manager.save_messages_to_thread(thread_id, text, final_text)
-                            return {"text": final_text, "images": result_images}
-                            
-                    except Exception:
-                        print(traceback.format_exc())
-                        await delete_message.delete()
-                        logger.log(
-                            "GPT_ERROR",
-                            f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}"
-                        )
-                        print_log(message=f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}")
-                        return ("Произошла непредвиденная ошибка, попробуй еще раз!"
-                                " Твой запрос может содержать контент, который"
-                                " не разрешен нашей системой безопасности")
+                tool_call = message_response.tool_calls[0]
+                if tool_call.function.name == "search_web":
+                    delete_message = await main_bot.send_message(text="🔍Начал поиск в интернете, анализирую страницы...",
+                                                                 chat_id=user.user_id)
+                elif tool_call.function.name == "add_notification":
+                    delete_message = await main_bot.send_message(
+                        text="🖌Начал настраивать напоминание, это не займет много времени...",
+                        chat_id=user.user_id)
                 else:
-                    # Обычный ответ без tool calls
-                    response_text = message_response.content
+                    if user_sub.photo_generations <= 0:
+                        generations_packets = await generations_packets_repository.select_all_generations_packets()
+                        from settings import buy_generations_text
+                        await main_bot.send_message(text=buy_generations_text,
+                                                    reply_markup=more_generations_keyboard(
+                                                        generations_packets).as_markup())
+                        raise NoGenerations(f"User {user.user_id} dont has generations")
+                    delete_message = await main_bot.send_message(chat_id=user.user_id,
+                                                                 text="🎨Начал работу над изображением, немного магии…")
+                try:
+                    # Обрабатываем tool calls
+                    tool_results = await process_tool_calls(message_response.tool_calls, user_id=user.user_id)
+                    result_images = tool_results.get("final_images", [])
+                    web_answer = tool_results.get("web_answer")
+                    notification = tool_results.get("notif_answer")
                     
-                    # Сохраняем в thread
-                    await self.messages_manager.save_messages_to_thread(thread_id, text, response_text)
-                    
-                    if with_audio_transcription:
-                        audio_data = await self.generate_audio_by_text(response_text)
-                        return sanitize_with_links(response_text), audio_data
-                    
-                    return sanitize_with_links(response_text)
+                    if len(result_images) == 0 and web_answer is None and notification is None:
+                        await delete_message.delete()
+                        return ("Не смогли сгенерировать изображение или обработать запрос😔\n\nВозможно,"
+                                " ты попросил что-то, что выходит за рамки норм")
+                        
+                    await delete_message.delete()
+                        
+                    if web_answer:
+                        # Сохраняем в thread
+                        await self.messages_manager.save_messages_to_thread(thread_id, text, web_answer)
+                        return sanitize_with_links(web_answer)
+                        
+                    if notification:
+                        # Сохраняем в thread
+                        await self.messages_manager.save_messages_to_thread(thread_id, text, notification)
+                        return sanitize_with_links(notification)
+                        
+                    elif len(result_images) != 0:
+                        final_text = "Сгенерировал изображение"
+                        # Сохраняем в thread
+                        await self.messages_manager.save_messages_to_thread(thread_id, text, final_text)
+                        return {"text": final_text, "images": result_images}
+                            
+                except Exception:
+                    print(traceback.format_exc())
+                    await delete_message.delete()
+                    logger.log(
+                        "GPT_ERROR",
+                        f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}"
+                    )
+                    print_log(message=f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}")
+                    return ("Произошла непредвиденная ошибка, попробуй еще раз!"
+                            " Твой запрос может содержать контент, который"
+                            " не разрешен нашей системой безопасности")
+            else:
+                # Обычный ответ без tool calls
+                response_text = message_response.content
+                
+                # Сохраняем в thread
+                await self.messages_manager.save_messages_to_thread(thread_id, text, response_text)
+                
+                if with_audio_transcription:
+                    audio_data = await self.generate_audio_by_text(response_text)
+                    return sanitize_with_links(response_text), audio_data
+                
+                return sanitize_with_links(response_text)
 
-            except NoSubscription:  # 1. пропускаем тарифные ошибки
-                raise
-            except Exception:
-                traceback.print_exc()
-                await self._reset_client()
-                logger.log(
-                    "GPT_ERROR",
-                    f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}"
-                )
-                print_log(message=f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}")
-                return ("Произошла непредвиденная ошибка, попробуй еще раз! Твой запрос может содержать"
-                        " контент, который не разрешен нашей системой безопасности")
+        except NoSubscription:  # 1. пропускаем тарифные ошибки
+            raise
+        except NoGenerations:  # 1. пропускаем тарифные ошибки
+            raise
+        except Exception:
+            traceback.print_exc()
+            await self._reset_client()
+            logger.log(
+                "GPT_ERROR",
+                f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}"
+            )
+            print_log(message=f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}")
+            return ("Произошла непредвиденная ошибка, попробуй еще раз! Твой запрос может содержать"
+                    " контент, который не разрешен нашей системой безопасности")
 
     # -------- вспомогательные методы --------
     @staticmethod
@@ -387,7 +395,6 @@ class GPTCompletions:  # noqa: N801 – сохраняем схожее имя �
         """Возвращает текстовую расшифровку аудио через Whisper."""
         url = "https://api.openai.com/v1/audio/transcriptions"
         headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
-
         audio_bytes.name = "audio.mp3"
         data = {"file": audio_bytes, "model": "whisper-1", "language": language}
 

@@ -1,6 +1,7 @@
 import locale
 import re
 from os import getenv
+import pytz
 
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -17,6 +18,17 @@ main_bot_token = getenv("MAIN_BOT_TOKEN")
 token_admin_bot = getenv("ADMIN_BOT_TOKEN")
 test_bot_token = getenv("TEST_BOT_TOKEN")
 business_connection_id = getenv("BUSINESS_CONNECTION_ID")
+
+
+# settings.py
+_current_bot = None
+
+def set_current_bot(bot):
+    global _current_bot
+    _current_bot = bot
+
+def get_current_bot():
+    return _current_bot
 
 MESSAGE_SPAM_TIMING=2
 
@@ -59,10 +71,12 @@ from datetime import datetime
 
 def get_current_datetime_string() -> str:
     """
-    Возвращает текущую дату и время в формате строки 'YYYY-MM-DD HH:MM:SS'.
+    Возвращает текущую дату и время в московском часовом поясе в формате строки 'YYYY-MM-DD HH:MM:SS'.
     """
-    now = datetime.now()  # получение текущего локального времени :contentReference[oaicite:0]{index=0}
-    return now.strftime("%Y-%m-%d %H:%M:%S")
+    moscow_tz = pytz.timezone('Europe/Moscow')
+    utc_now = datetime.now()
+    moscow_now = utc_now.replace(tzinfo=pytz.UTC).astimezone(moscow_tz) if utc_now.tzinfo is None else utc_now.astimezone(moscow_tz)
+    return moscow_now.strftime("%Y-%m-%d %H:%M:%S")
 
 def print_log(message: str) -> None:
     print(message)
@@ -101,16 +115,29 @@ gpt_completions = GPTCompletions()
 
 
 def get_weekday_russian(date: datetime.date = None) -> str:
+    """
+    Возвращает день недели на русском языке для московского времени.
+    """
     import datetime
-    # Устанавливаем русскую локаль
-    locale.setlocale(locale.LC_TIME, 'ru_RU.UTF-8')
-
-    # Если дата не передана — берём текущую
+    
+    # Если дата не передана — берём текущую в московском времени
     if date is None:
-        date = datetime.date.today()
+        moscow_tz = pytz.timezone('Europe/Moscow')
+        utc_now = datetime.datetime.utcnow()
+        moscow_now = utc_now.replace(tzinfo=pytz.UTC).astimezone(moscow_tz)
+        date = moscow_now.date()
 
-    # Возвращаем день недели (например, 'понедельник')
-    return date.strftime('%A')
+    # Возвращаем день недели на русском
+    weekdays = {
+        0: 'понедельник',
+        1: 'вторник', 
+        2: 'среда',
+        3: 'четверг',
+        4: 'пятница',
+        5: 'суббота',
+        6: 'воскресенье'
+    }
+    return weekdays[date.weekday()]
 
 
 
@@ -138,6 +165,18 @@ sub_text = """🔓 Откройте весь потенциал нашего И�
 📅 Подписка активируется мгновенно, отменить можно в любой момент.
 
 😊 Выберите подходящий уровень и нажмите «Оплатить» — мы уже готовы помочь!"""
+
+
+buy_generations_text = """📸 У вас закончились доступные генерации.
+
+<b>Доступные пакеты докупа:</b>
+• <b>Докуп 1</b> — 390 ₽: 20 генераций
+• <b>Докуп 2</b> — 890 ₽: 50 генераций
+
+📅 Пакет активируется мгновенно и не продлевается автоматически. Отменять ничего не нужно — после расхода вы снова увидите предложение докупить.
+
+😊 Выберите подходящий пакет и нажмите «Оплатить», чтобы продолжить генерировать контент!
+"""
 
 
 tools = [

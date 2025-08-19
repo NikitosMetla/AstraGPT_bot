@@ -1,4 +1,5 @@
-from typing import Sequence
+from datetime import datetime
+from typing import Sequence, Optional
 
 from sqlalchemy import select, or_, update, delete, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,11 +14,7 @@ class SubscriptionsRepository:
 
     async def add_subscription(self, type_sub_id: int, photo_generations: int, user_id: int, time_limit_subscription: int, active: bool = True,
                                method_id: str | None = None) -> bool:
-        """    user_id = Column(BigInteger, ForeignKey('users.user_id'), nullable=False)
-                user: Mapped[Users] = relationship("Users", backref=__tablename__, cascade='all', lazy='subquery')
-                start_subscription_date = Column(DateTime, nullable=False)
-                time_limit_subscription = Column(Integer, nullable=False)
-                active = Column(Boolean, nullable=False, default=True)"""
+
         async with self.session_maker() as session:
             session: AsyncSession
             async with session.begin():
@@ -29,6 +26,44 @@ class SubscriptionsRepository:
                 except Exception:
                     return False
                 return True
+
+    async def replace_subscription(
+        self,
+        subscription_id: int,
+        *,
+        type_sub_id: int,
+        photo_generations: int,
+        time_limit_subscription: int,
+        active: bool,
+        method_id: Optional[str] = None,
+        user_id: Optional[int] = None,
+    ) -> None:
+        """
+        Полностью перезаписывает параметры подписки с заданным id.
+        Возвращает обновлённую модель или None, если запись не найдена.
+        """
+        async with self.session_maker() as session:
+            session: AsyncSession
+            async with session.begin():
+                values = {
+                    Subscriptions.type_subscription_id: type_sub_id,
+                    Subscriptions.photo_generations: photo_generations,
+                    Subscriptions.time_limit_subscription: time_limit_subscription,
+                    Subscriptions.active: active,
+                    Subscriptions.method_id: method_id,
+                    Subscriptions.last_billing_date: datetime.now(),
+                }
+                # Опциональные поля — только если заданы
+                if user_id is not None:
+                    values[Subscriptions.user_id] = user_id
+
+                stmt = (
+                    update(Subscriptions)
+                    .where(or_(Subscriptions.id == subscription_id))
+                    .values(values)
+                )
+                await session.execute(stmt)
+                await session.commit()
 
     async def get_active_subscription_by_user_id(self, user_id: int) -> Subscriptions:
         async with self.session_maker() as session:
@@ -79,6 +114,26 @@ class SubscriptionsRepository:
             async with session.begin():
                 sql = update(Subscriptions).values({
                     Subscriptions.time_limit_subscription: Subscriptions.time_limit_subscription + new_time_limit
+                }).where(or_(Subscriptions.id == subscription_id))
+                await session.execute(sql)
+                await session.commit()
+
+    async def update_generations(self, subscription_id: int, new_generations: int):
+        async with self.session_maker() as session:
+            session: AsyncSession
+            async with session.begin():
+                sql = update(Subscriptions).values({
+                    Subscriptions.photo_generations: Subscriptions.photo_generations + new_generations
+                }).where(or_(Subscriptions.id == subscription_id))
+                await session.execute(sql)
+                await session.commit()
+
+    async def use_generation(self, subscription_id: int):
+        async with self.session_maker() as session:
+            session: AsyncSession
+            async with session.begin():
+                sql = update(Subscriptions).values({
+                    Subscriptions.photo_generations: Subscriptions.photo_generations - 1
                 }).where(or_(Subscriptions.id == subscription_id))
                 await session.execute(sql)
                 await session.commit()

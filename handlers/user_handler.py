@@ -13,12 +13,87 @@ from data.keyboards import profiles_keyboard, cancel_keyboard, settings_keyboard
 from db.repository import users_repository, ai_requests_repository, subscriptions_repository, \
     type_subscriptions_repository
 from settings import InputMessage, photos_pages, OPENAI_ALLOWED_DOC_EXTS, gpt_assistant, sub_text, gpt_completions
-from utils.combined_gpt_tools import NoSubscription
+from utils.combined_gpt_tools import NoSubscription, NoGenerations
 from utils.is_subscriber import is_subscriber
 from utils.paginator import MechanicsPaginator
 from utils.parse_gpt_text import split_telegram_html, sanitize_with_links
 
 standard_router = Router()
+
+
+async def process_ai_response(ai_response, message: Message, user_id: int, bot: Bot, request_text: str = None, photo_id: str = None, has_photo: bool = False, has_audio: bool = False, has_files: bool = False, file_id: str = None):
+    """
+    Обрабатывает ответ от GPT в формате final_content и отправляет пользователю
+    """
+    from aiogram.enums import ParseMode
+    
+    # Если ответ не является словарем (обратная совместимость), преобразуем
+    if not isinstance(ai_response, dict):
+        ai_response = {"text": str(ai_response), "image_files": [], "files": [], "audio_file": None}
+    
+    # Извлекаем данные из final_content
+    text = ai_response.get("text", "")
+    image_files = ai_response.get("image_files", [])
+    files = ai_response.get("files", [])
+    audio_file = ai_response.get("audio_file")
+    
+    # Обработка файлов (документы, изображения от ассистента)
+    if files:
+        for file_data in files:
+            try:
+                await message.reply_document(
+                    document=BufferedInputFile(
+                        file=file_data.get("bytes"),
+                        filename=file_data.get("filename")
+                    )
+                )
+                text = text or "🤖Сгенерированный файл"
+            except Exception:
+                print(traceback.format_exc())
+                await message.answer("Возникла ошибка при отправке файла, попробуй еще раз")
+                return
+    
+    # Обработка изображений
+    if image_files:
+        raw = image_files[0]
+        buffer = io.BytesIO(raw)
+        buffer.seek(0)
+        
+        photo = BufferedInputFile(file=buffer.getvalue(), filename="image.png")
+        reply_message = await message.reply_photo(
+            text=text,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+            photo=photo
+        )
+        await users_repository.update_last_photo_id_by_user_id(
+            photo_id=reply_message.photo[-1].file_id, 
+            user_id=user_id
+        )
+    else:
+        # Обработка текстового ответа
+        if text:
+            text = sanitize_with_links(text)
+            split_messages = split_telegram_html(text)
+            for chunk in split_messages:
+                await message.reply(
+                    chunk,
+                    disable_web_page_preview=True,
+                    parse_mode=ParseMode.HTML
+                )
+
+    # Сохранение запроса в БД
+    await ai_requests_repository.add_request(
+        user_id=user_id,
+        answer_ai=text if text and text != "" else "Выдал файл или фото",
+        user_question=request_text,
+        generate_images=bool(image_files),
+        has_photo=has_photo,
+        photo_id=photo_id,
+        has_audio=has_audio,
+        has_files=has_files,
+        file_id=file_id
+    )
 
 
 @standard_router.callback_query(F.data == "delete_payment", any_state)
@@ -211,60 +286,24 @@ async def standard_message_handler(message: Message, bot: Bot):
         )
     except:
         print(traceback.format_exc())
-    # try:
-    #     ai_answer = await gpt_assistant.send_message(user_id=user_id,
-    #                                                  thread_id=user.standard_ai_threat_id,
-    #                                                  text=text,
-    #                                                  user_data=user)
-    # except NoSubscription:
-    #     return
-    images = []
-    if type(ai_answer) == dict and ai_answer.get("filename"):
-        try:
-            await message.reply_document(document=BufferedInputFile(file=ai_answer.get("bytes"),
-                                                                     filename=ai_answer.get("filename")))
-            ai_answer = "🤖Сгенерированный файл"
-        except:
-            print(traceback.format_exc())
-            await message.answer("Возникла ошибка при отправке файла, попробуй еще раз")
-            return
-    elif type(ai_answer) == dict:
-        images = ai_answer.get("images")
-        ai_answer = ai_answer.get("text")
-
-    # print(ai_answer)
-    ai_answer = sanitize_with_links(ai_answer)
-    # pprint.pprint(ai_answer)
-    # print(ai_answer)
-    await ai_requests_repository.add_request(user_id=user.user_id,
-                                             answer_ai=ai_answer if ai_answer is not None and ai_answer != "" else "Выдал файл или фото",
-                                             user_question=text,
-                                             generate_images=True if len(images) > 0 else False
-                                             )
-    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    from aiogram.enums import ParseMode
-    if len(images) == 0:
-        split_messages = split_telegram_html(ai_answer)
-        print("\n\n")
-        # pprint.pprint(split_messages)
-        for chunk in split_messages:
-            await message.reply(
-                chunk,
-                disable_web_page_preview=True,
-                parse_mode=ParseMode.HTML
-            )
+    try:
+        ai_answer = await gpt_assistant.send_message(user_id=user_id,
+                                                     thread_id=user.standard_ai_threat_id,
+                                                     text=text,
+                                                     user_data=user)
+    except NoSubscription:
         return
-    else:
-        raw = images[0]
-        buffer = io.BytesIO(raw)
-        buffer.seek(0)
-
-        photo = BufferedInputFile(file=buffer.getvalue(), filename="image.png")
-        message = await message.reply_photo(text=ai_answer,
-            parse_mode=ParseMode.HTML,  # ← ключевой параметр
-            disable_web_page_preview=True,
-            photo=photo) # чтобы не появлялись лишние превью
-        await users_repository.update_last_photo_id_by_user_id(photo_id=message.photo[-1].file_id, user_id=user_id)
+    except NoGenerations:
+        return
+    
+    # Используем новую функцию для обработки ответа
+    await process_ai_response(
+        ai_response=ai_answer,
+        message=message,
+        user_id=user_id,
+        bot=bot,
+        request_text=text
+    )
 
 
 
@@ -304,46 +343,19 @@ async def handle_photo_album(messages: list[types.Message], bot: Bot):
         )
     except NoSubscription:
         return
-    images = []
-    if type(ai_answer) == dict and ai_answer.get("filename"):
-        try:
-            await first.reply_document(document=BufferedInputFile(file=ai_answer.get("bytes"),
-                                                                    filename=ai_answer.get("filename")))
-            ai_answer = "🤖Сгенерированный файл"
-        except:
-            print(traceback.format_exc())
-            await first.answer("Возникла ошибка при отправке файла, попробуй еще раз")
-            return
-    elif type(ai_answer) == dict:
-        images = ai_answer.get("images")
-        ai_answer = ai_answer.get("text")
-    # ai_answer = sanitize_with_links(ai_answer)
-    from aiogram.enums import ParseMode
-    if len(images) == 0:
-        for chunk in split_telegram_html(ai_answer):
-            await first.reply(
-                chunk,
-
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True
-            )
+    except NoGenerations:
         return
-    else:
-        raw = images[0]
-        buffer = io.BytesIO(raw)
-        buffer.seek(0)
-
-        photo = BufferedInputFile(file=buffer.getvalue(), filename="image.png")
-        message = await messages[0].reply_photo(text=ai_answer,
-                                            parse_mode=ParseMode.HTML,  # ← ключевой параметр
-                                            disable_web_page_preview=True,
-                                            photo=photo)  # чтобы не появлялись лишние превью
-    await ai_requests_repository.add_request(user_id=user.user_id,
-                                             has_photo=True,
-                                             answer_ai=ai_answer if ai_answer is not None and ai_answer != "" else "Выдал фото или видел",
-                                             user_question=first.caption,
-                                             photo_id=", ".join(photo_ids),
-                                             generate_images=True if len(images) > 0 else False)
+    
+    # Используем новую функцию для обработки ответа
+    await process_ai_response(
+        ai_response=ai_answer,
+        message=first,
+        user_id=user_id,
+        bot=bot,
+        request_text=first.caption,
+        photo_id=", ".join(photo_ids),
+        has_photo=True
+    )
 
 
 
@@ -379,50 +391,24 @@ async def standard_message_photo_handler(message: Message, bot: Bot):
                                                      image_bytes=[photo_bytes_io])
     except NoSubscription:
         return
-    images = []
-    if type(ai_answer) == dict and ai_answer.get("filename"):
-        try:
-            await message.reply_document(document=BufferedInputFile(file=ai_answer.get("bytes"),
-                                                                    filename=ai_answer.get("filename")))
-            ai_answer = "🤖Сгенерированный файл"
-        except:
-            print(traceback.format_exc())
-            await message.answer("Возникла ошибка при отправке файла, попробуй еще раз")
-            return
-    elif type(ai_answer) == dict:
-        images = ai_answer.get("images")
-        ai_answer = ai_answer.get("text")
-    # ai_answer = sanitize_with_links(ai_answer)
-    from aiogram.enums import ParseMode
-    if len(images) == 0:
-        for chunk in split_telegram_html(ai_answer):
-            await message.reply(
-                chunk,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True
-            )
-    else:
-        raw = images[0]
-        buffer = io.BytesIO(raw)
-        buffer.seek(0)
-
-        photo = BufferedInputFile(file=buffer.getvalue(), filename="image.png")
-        message = await message.reply_photo(text=ai_answer,
-                                            parse_mode=ParseMode.HTML,  # ← ключевой параметр
-                                            disable_web_page_preview=True,
-                                            photo=photo)  # чтобы не появлялись лишние превью
-        await users_repository.update_last_photo_id_by_user_id(photo_id=message.photo[-1].file_id, user_id=user_id)
-    await ai_requests_repository.add_request(user_id=user.user_id,
-                                             has_photo=True,
-                                             photo_id=photo_id,
-                                             answer_ai=ai_answer if ai_answer is not None and ai_answer != "" else "Выдал фото или файл",
-                                             user_question=message.caption,
-                                             generate_images=True if len(images) > 0 else False)
+    except NoGenerations:
+        return
+    
+    # Используем новую функцию для обработки ответа
+    await process_ai_response(
+        ai_response=ai_answer,
+        message=message,
+        user_id=user_id,
+        bot=bot,
+        request_text=message.caption,
+        photo_id=photo_id,
+        has_photo=True
+    )
 
 
 @standard_router.message(F.voice)
 @is_subscriber
-async def standard_message_voice_handler(message: Message, bot: Bot, state: FSMContext):
+async def standard_message_voice_handler(message: Message, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
     user = await users_repository.get_user_by_user_id(user_id=user_id)
     # if user is not None and user.full_registration:
@@ -450,44 +436,18 @@ async def standard_message_voice_handler(message: Message, bot: Bot, state: FSMC
             user_data=user)
     except NoSubscription:
         return
-    images = []
-    if type(ai_answer) == dict and ai_answer.get("filename"):
-        try:
-            await message.reply_document(document=BufferedInputFile(file=ai_answer.get("bytes"),
-                                                                    filename=ai_answer.get("filename")))
-            ai_answer = "🤖Сгенерированный файл"
-        except:
-            print(traceback.format_exc())
-            await message.answer("Возникла ошибка при отправке файла, попробуй еще раз")
-            return
-    elif type(ai_answer) == dict:
-        images = ai_answer.get("images")
-        ai_answer = ai_answer.get("text")
-    # ai_answer = sanitize_with_links(ai_answer)
-    from aiogram.enums import ParseMode
-    if len(images) == 0:
-        for chunk in split_telegram_html(ai_answer):
-            await message.reply(
-                chunk,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True
-            )
-    else:
-        raw = images[0]
-        buffer = io.BytesIO(raw)
-        buffer.seek(0)
-
-        photo = BufferedInputFile(file=buffer.getvalue(), filename="image.png")
-        message = await message.reply_photo(text=ai_answer,
-                                            parse_mode=ParseMode.HTML,  # ← ключевой параметр
-                                            disable_web_page_preview=True,
-                                            photo=photo)  # чтобы не появлялись лишние превью
-        await users_repository.update_last_photo_id_by_user_id(photo_id=message.photo[-1].file_id, user_id=user_id)
-    await ai_requests_repository.add_request(user_id=user.user_id,
-                                             has_audio=True,
-                                             answer_ai=ai_answer if ai_answer is not None and type(ai_answer) == str and ai_answer != ""  else "Выдал фото или файл",
-                                             user_question=transcribed_audio_text,
-                                             generate_images=True if len(images) > 0 else False)
+    except NoGenerations:
+        return
+    
+    # Используем новую функцию для обработки ответа
+    await process_ai_response(
+        ai_response=ai_answer,
+        message=message,
+        user_id=user_id,
+        bot=bot,
+        request_text=transcribed_audio_text,
+        has_audio=True
+    )
 
 
 @standard_router.message(
@@ -532,6 +492,8 @@ async def handle_document_album(messages: list[types.Message], bot: Bot, state: 
             )
         except NoSubscription:
             return
+        except NoGenerations:
+            return
     else:
         try:
             ai_answer = await gpt_assistant.send_message(
@@ -543,47 +505,18 @@ async def handle_document_album(messages: list[types.Message], bot: Bot, state: 
             )
         except NoSubscription:
             return
-    images = []
-    if type(ai_answer) == dict and ai_answer.get("filename"):
-        try:
-            await first.reply_document(caption="🤖Сгенерированный файл", document=BufferedInputFile(file=ai_answer.get("bytes"),
-                                                                    filename=ai_answer.get("filename")))
-            ai_answer = "🤖Сгенерированный файл"
-        except:
-            print(traceback.format_exc())
-            await first.answer("Возникла ошибка при отправке файла, попробуй еще раз")
+        except NoGenerations:
             return
-    elif type(ai_answer) == dict:
-        images = ai_answer.get("images")
-        ai_answer = ai_answer.get("text")
-    # print(ai_answer)
-    # ai_answer = sanitize_with_links(ai_answer)
-    from aiogram.enums import ParseMode
-    if len(images) == 0:
-        for chunk in split_telegram_html(ai_answer):
-            await first.reply(
-                chunk,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True
-            )
-    else:
-        raw = images[0]
-        buffer = io.BytesIO(raw)
-        buffer.seek(0)
-
-        photo = BufferedInputFile(file=buffer.getvalue(), filename="image.png")
-        message = await first.reply_photo(text=ai_answer,
-                                            parse_mode=ParseMode.HTML,  # ← ключевой параметр
-                                            disable_web_page_preview=True,
-                                            photo=photo)  # чтобы не появлялись лишние превью
-        await users_repository.update_last_photo_id_by_user_id(photo_id=message.photo[-1].file_id, user_id=user_id)
-    await ai_requests_repository.add_request(
-        user_id=user.user_id,
+    
+    # Используем новую функцию для обработки ответа
+    await process_ai_response(
+        ai_response=ai_answer,
+        message=first,
+        user_id=user_id,
+        bot=bot,
+        request_text=text,
         has_files=True,
-        file_id=", ".join(file_ids),
-        answer_ai=ai_answer,
-        user_question=text,
-        generate_images=True if len(images) > 0 else False
+        file_id=", ".join(file_ids)
     )
 
 
@@ -626,6 +559,8 @@ async def standard_message_document_handler(message: Message, bot: Bot, state: F
                                                              image_bytes=[buf])
             except NoSubscription:
                 return
+            except NoGenerations:
+                return
         else:
             try:
                 ai_answer = await gpt_assistant.send_message(user_id=user_id,
@@ -636,48 +571,19 @@ async def standard_message_document_handler(message: Message, bot: Bot, state: F
                                                              document_type=extension)
             except NoSubscription:
                 return
-        images = []
-        if type(ai_answer) == dict and ai_answer.get("filename"):
-            try:
-                await message.reply_document(document=BufferedInputFile(file=ai_answer.get("bytes"),
-                                                                      filename=ai_answer.get("filename")))
-                ai_answer = "🤖Сгенерированный файл"
-            except:
-                print(traceback.format_exc())
-                await message.answer("Возникла ошибка при отправке файла, попробуй еще раз")
+            except NoGenerations:
                 return
-        elif type(ai_answer) == dict:
-            images = ai_answer.get("images")
-            ai_answer = ai_answer.get("text")
-        # print(ai_answer)
-        # ai_answer = sanitize_with_links(ai_answer)
-        from aiogram.enums import ParseMode
-        if len(images) == 0:
-            for chunk in split_telegram_html(ai_answer):
-                await message.reply(
-                    chunk,
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True
-                )
-        else:
-            # print("sdgsf")
-            raw = images[0]
-            buffer = io.BytesIO(raw)
-            buffer.seek(0)
-
-            photo = BufferedInputFile(file=buffer.getvalue(), filename="image.png")
-            message = await message.reply_photo(caption=ai_answer,
-                                                parse_mode=ParseMode.HTML,  # ← ключевой параметр
-                                                disable_web_page_preview=True,
-                                                photo=photo)  # чтобы не появлялись лишние превью
-            await users_repository.update_last_photo_id_by_user_id(photo_id=message.photo[-1].file_id, user_id=user_id)
-        await ai_requests_repository.add_request(user_id=user.user_id,
-                                                 answer_ai=ai_answer if ai_answer is not None and ai_answer != "" and type(
-                                                     ai_answer) == str else "Выдал фото или файл",
-                                                 user_question=message.caption,
-                                                 has_files=True,
-                                                 file_id=message.document.file_id
-                                                 )
+                
+        # Используем новую функцию для обработки ответа
+        await process_ai_response(
+            ai_response=ai_answer,
+            message=message,
+            user_id=user_id,
+            bot=bot,
+            request_text=message.caption,
+            has_files=True,
+            file_id=message.document.file_id
+        )
 
 
 

@@ -131,6 +131,21 @@ unlink_card_keyboard = InlineKeyboardBuilder()
 unlink_card_keyboard.row(InlineKeyboardButton(text="Отвязать карту", callback_data="unlink_card"))
 unlink_card_keyboard.row(InlineKeyboardButton(text="Отмена", callback_data="cancel"))
 
+def delete_notification_keyboard(notif_id: int):
+    keyboard = InlineKeyboardBuilder()
+    keyboard.row(InlineKeyboardButton(text="❌Отменить напоминание", callback_data=f"delete_notification|{notif_id}"))
+    return keyboard
+
+def confirm_delete_notification_keyboard(notif_id: int):
+    keyboard = InlineKeyboardBuilder()
+    keyboard.row(InlineKeyboardButton(text="Да",
+                                      callback_data=f"confirm_delete_notification|"
+                                                    f"yes|{notif_id}"))
+    keyboard.row(InlineKeyboardButton(text="Нет",
+                                      callback_data=f"confirm_delete_notification|"
+                                                    f"no|{notif_id}"))
+    return keyboard
+
 
 delete_payment_keyboard = InlineKeyboardBuilder()
 delete_payment_keyboard.row(InlineKeyboardButton(text="Отвязать карту", callback_data="delete_payment"))

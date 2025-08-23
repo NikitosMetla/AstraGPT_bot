@@ -1,5 +1,6 @@
 from .admin_repo import AdminRepository
 from .ai_requests_repo import AiRequestsRepository
+from .dialogs_messages_repo import DialogsMessagesRepository
 from .events_repo import EventsRepository
 from .generations_packets_repository import GenerationsPacketsRepository
 from .notifications_repository import NotificationsRepository
@@ -21,6 +22,7 @@ notifications_repository = NotificationsRepository()
 operation_repository = OperationRepository()
 type_subscriptions_repository = TypeSubscriptionsRepository()
 generations_packets_repository = GenerationsPacketsRepository()
+dialogs_messages_repository = DialogsMessagesRepository()
 
 __all__ = ['users_repository',
            'admin_repository',
@@ -33,4 +35,5 @@ __all__ = ['users_repository',
            'operation_repository',
            'type_subscriptions_repository',
            'generations_packets_repository',
+           'dialogs_messages_repository',
           ]

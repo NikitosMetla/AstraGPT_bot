@@ -1,3 +1,5 @@
+# gpt_completions.py
+
 from __future__ import annotations
 
 import asyncio
@@ -5,11 +7,9 @@ import base64
 import io
 import json
 import os
-import pprint
 import traceback
 from collections import defaultdict
-from typing import Any, Awaitable, Callable, Optional, Sequence, Literal
-from typing import Dict
+from typing import Any, Awaitable, Callable, Optional, Sequence, Dict, List, Tuple
 
 import aiohttp
 from dotenv import find_dotenv, load_dotenv
@@ -20,40 +20,58 @@ from openai import (
     AsyncOpenAI,
     AuthenticationError,
     PermissionDeniedError,
-    RateLimitError, BadRequestError, )
+    RateLimitError,
+    BadRequestError,
+)
 
-from data.keyboards import subscriptions_keyboard, more_generations_keyboard
-from db.repository import generations_packets_repository
-from settings import get_current_datetime_string, print_log
+from settings import get_current_datetime_string, print_log, get_current_bot
+from data.keyboards import subscriptions_keyboard, more_generations_keyboard, delete_notification_keyboard
 from utils import web_search_agent
-from utils.create_notification import schedule_notification, NotificationSchedulerError
+from utils.create_notification import (
+    schedule_notification,
+    NotificationLimitError,
+    NotificationFormatError,
+    NotificationDateTooFarError,
+    NotificationDateInPastError,
+    NotificationPastTimeError,
+    NotificationTextTooShortError,
+    NotificationTextTooLongError,
+)
+from utils.gpt_images import AsyncOpenAIImageClient
+from utils.new_fitroom_api import FitroomClient
 from utils.parse_gpt_text import sanitize_with_links
 from utils.runway_api import generate_image_bytes
-from utils.combined_gpt_tools import AsyncOpenAIImageClient, NoSubscription, NoGenerations
 
-# completions_gpt_tools.py
+from db.models import Users
+from db.repository import (
+    users_repository,
+    subscriptions_repository,
+    type_subscriptions_repository,
+    generations_packets_repository,
+    notifications_repository, dialogs_messages_repository,
+)
+from db.models import DialogsMessages
 
-_thread_locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
-
-
-async def get_thread_lock(thread_id: str) -> asyncio.Lock:
-    # defaultdict вернёт существующий или создаст новый Lock
-    return _thread_locks[thread_id]
-
+# --- глобальные переменные и инициализация ---
 
 load_dotenv(find_dotenv())
 OPENAI_API_KEY: str | None = os.getenv("GPT_TOKEN") or os.getenv("OPENAI_API_KEY")
 DEFAULT_IMAGE_MODEL = "gpt-image-1"
 DEFAULT_IMAGE_SIZE = "1024x1024"
 
-# --- вспомогательные функции ---
-def _b64(b: bytes) -> str:
-    """Возвращает Base64‑строку из байтов."""
-    return base64.b64encode(b).decode()
+_thread_locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
-def _b64decode(s: str) -> bytes:
-    """Декодирует Base64‑строку в байты."""
-    return base64.b64decode(s)
+class NoSubscription(Exception):
+    pass
+
+class NoGenerations(Exception):
+    pass
+
+async def get_thread_lock(user_key: str) -> asyncio.Lock:
+    return _thread_locks[user_key]
+
+def _b64(b: bytes) -> str:
+    return base64.b64encode(b).decode()
 
 async def _retry(
     fn: Callable[..., Awaitable[Any]],
@@ -62,7 +80,6 @@ async def _retry(
     backoff: float = 1.5,
     **kwargs,
 ):
-    """Повторяет вызов *fn* с экспоненциальной задержкой при сетевых ошибках."""
     for attempt in range(1, attempts + 1):
         try:
             return await fn(*args, **kwargs)
@@ -71,95 +88,401 @@ async def _retry(
                 raise
             await asyncio.sleep(backoff ** attempt)
         except (AuthenticationError, PermissionDeniedError):
-            raise  # ошибки неустранимы
+            raise
 
+# --- Помощники по аудио ---
 
-class ThreadMessagesManager:
-    """Класс для управления сообщениями через OpenAI threads для Chat Completions API"""
-    
-    def __init__(self, client: AsyncOpenAI):
-        self.client = client
-    
-    async def save_messages_to_thread(self, thread_id: str, user_message: str, assistant_response: str):
-        """Сохраняет пользовательское сообщение и ответ ассистента в OpenAI thread"""
-        try:
-            # Добавляем сообщение пользователя
-            await self.client.beta.threads.messages.create(
-                thread_id=thread_id,
-                role="user",
-                content=user_message
-            )
-            
-            # Добавляем ответ ассистента
-            await self.client.beta.threads.messages.create(
-                thread_id=thread_id,
-                role="assistant",
-                content=assistant_response
-            )
-        except Exception as e:
-            print(f"Ошибка при сохранении сообщений в thread {thread_id}: {e}")
-    
-    async def get_thread_messages(self, thread_id: str, limit: int = 10) -> list[dict]:
-        """Загружает последние сообщения из OpenAI thread и форматирует их для Chat Completions API"""
-        try:
-            messages = await self.client.beta.threads.messages.list(
-                thread_id=thread_id,
-                limit=limit * 2,  # учитываем что у нас есть и user и assistant сообщения
-                order="desc"
-            )
-            
-            # Преобразуем в формат для Chat Completions API
-            formatted_messages = []
-            for message in reversed(messages.data):
-                if message.role in ["user", "assistant"]:
-                    content = ""
-                    if hasattr(message.content[0], 'text'):
-                        content = message.content[0].text.value
-                    elif hasattr(message.content[0], 'image_file'):
-                        content = "изображение было обработано"
-                    
-                    formatted_messages.append({
-                        "role": message.role,
-                        "content": content
-                    })
-            
-            # Ограничиваем до последних limit пар сообщений
-            if len(formatted_messages) > limit * 2:
-                formatted_messages = formatted_messages[-(limit * 2):]
-            
-            return formatted_messages
-            
-        except Exception as e:
-            print(f"Ошибка при загрузке сообщений из thread {thread_id}: {e}")
-            return []
-    
-    async def ensure_thread_exists(self, thread_id: str | None = None) -> str:
-        """Проверяет существование thread или создает новый через OpenAI API"""
-        if thread_id:
-            try:
-                await self.client.beta.threads.retrieve(thread_id=thread_id)
-                return thread_id
-            except:
-                # Если thread не найден, создаем новый
-                pass
-        
-        # Создаем новый thread через OpenAI API
-        thread = await self.client.beta.threads.create()
-        return thread.id
+async def tts_generate_audio_mp3(text: str) -> io.BytesIO:
+    url = "https://api.openai.com/v1/audio/speech"
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": "gpt-4o-mini-tts",
+        "input": text,
+        "voice": "shimmer",
+        "instructions": "Speak dramatic",
+        "response_format": "mp3",
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, headers=headers, json=payload, timeout=30) as response:
+            if response.status == 200:
+                return io.BytesIO(await response.read())
+            raise RuntimeError(f"TTS error {response.status}: {await response.text()}")
 
+# --- Адаптация tools к Chat Completions ---
 
-class GPTCompletions:  # noqa: N801 – сохраняем схожее имя с оригиналом
-    """Помощник через Chat Completions API вместо Assistant API."""
+def _tools_for_chat_completions(tools: List[dict]) -> List[dict]:
+    conv = []
+    for t in tools:
+        conv.append({
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t.get("description") or "",
+                "parameters": t.get("parameters") or {"type": "object", "properties": {}},
+                "strict": t.get("strict", False),
+            }
+        })
+    return conv
 
+# --- Сохранение/загрузка истории ---
+
+class HistoryStore:
     def __init__(self):
-        """Инициализирует GPT-помощника через Chat Completions API."""
+        self.repo = dialogs_messages_repository
+
+    async def append(self, user_id: int, payload: dict):
+        await self.repo.add_message(user_id=user_id, message=payload)
+
+    async def load(self, user_id: int) -> List[DialogsMessages]:
+        return await self.repo.get_messages_by_user_id(user_id=user_id)
+
+# --- Маппинг истории в Chat Completions messages ---
+
+def _map_history_to_chat_messages(items: List[DialogsMessages]) -> List[dict]:
+    msgs: List[dict] = []
+    for itm in items:
+        try:
+            payload = itm.message
+            t = payload.get("type")
+            if t == "human":
+                parts = (payload.get("additional_kwargs") or {}).get("content_parts")
+                if parts and isinstance(parts, list):
+                    msgs.append({"role": "user", "content": parts})
+                else:
+                    msgs.append({"role": "user", "content": payload.get("content", "")})
+            elif t == "ai":
+                tool_calls = payload.get("tool_calls") or []
+                message = {
+                    "role": "assistant",
+                    "content": payload.get("content", "") or None,
+                }
+                if tool_calls:
+                    cc = []
+                    for i, tc in enumerate(tool_calls):
+                        cc.append({
+                            "id": tc.get("id") or f"call_{i}",
+                            "type": "function",
+                            "function": {
+                                "name": tc.get("name"),
+                                "arguments": json.dumps(tc.get("arguments") or {}),
+                            }
+                        })
+                    message["tool_calls"] = cc
+                msgs.append(message)
+                invalids = payload.get("invalid_tool_calls") or []
+                if invalids:
+                    pass
+            elif t == "tool":
+                msgs.append({
+                    "role": "tool",
+                    "tool_call_id": payload.get("tool_call_id", ""),
+                    "content": payload.get("content", ""),
+                })
+        except Exception:
+            continue
+    return msgs[-50:]
+
+# --- Диспетчер инструментов (совместим с твоей логикой) ---
+
+async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_generations: int | None = None) -> Any:
+    # совместим как раньше: поддержка объекта/словаря
+    if hasattr(tool_call, "function"):
+        name = tool_call.function.name
+        args_raw = tool_call.function.arguments
+        call_id = getattr(tool_call, "id", None)
+    else:
+        name = tool_call.get("function", {}).get("name") or tool_call.get("name")
+        args_raw = tool_call.get("function", {}).get("arguments") or tool_call.get("arguments")
+        call_id = tool_call.get("id")
+
+    if isinstance(args_raw, dict):
+        args = args_raw
+    else:
+        try:
+            args = json.loads(args_raw)
+        except Exception:
+            first_obj = (args_raw or "").split('}', 1)[0] + '}'
+            args = json.loads(first_obj)
+
+    user = await users_repository.get_user_by_user_id(user_id=user_id)
+    photo_bytes = []
+    if name == "add_notification":
+        when_send_str, text_notification = args.get("when_send_str"), args.get("text_notification")
+        try:
+            await schedule_notification(user_id=user.user_id, when_send_str=when_send_str, text_notification=text_notification)
+            return f"✅ Отлично! Уведомление установлено на {when_send_str} по московскому времени\n\n📝 Текст напоминания: {text_notification}"
+        except NotificationLimitError:
+            active_notifications = await notifications_repository.get_active_notifications_by_user_id(user_id)
+            return (f"❌ Превышен лимит уведомлений. У вас уже есть {len(active_notifications)} активных уведомлений. Максимум: 10.")
+        except NotificationFormatError:
+            return "❌ Неверный формат даты/времени. Используйте ГГГГ-ММ-ДД ЧЧ:ММ:СС"
+        except NotificationDateTooFarError:
+            return "❌ Дата слишком далекая. Допускается до 2030 года."
+        except NotificationDateInPastError:
+            return "❌ Указанный год уже прошёл."
+        except NotificationPastTimeError:
+            return "❌ Время уже прошло. Укажите будущее время."
+        except NotificationTextTooShortError:
+            return "❌ Текст уведомления слишком короткий (>=3 символов)."
+        except NotificationTextTooLongError:
+            return "❌ Текст уведомления слишком длинный (<=500 символов)."
+        except Exception:
+            return "❌ Ошибка при создании уведомления. Попробуйте ещё раз."
+
+    if name == "search_web":
+        query = args.get("query") or ""
+        return await web_search_agent.search_prompt(query)
+
+    if user.last_image_id is not None:
+        for photo_id in user.last_image_id.split(", "):
+            main_bot = get_current_bot()
+            photo_bytes_io = io.BytesIO()
+            try:
+                await main_bot.download(photo_id, destination=photo_bytes_io)
+                photo_bytes_io.seek(0)
+                photo_bytes.append(photo_bytes_io.read())
+            except:
+                pass
+
+    if name == "generate_image":
+        try:
+            kwargs: dict[str, Any] = {
+                "prompt": args["prompt"],
+                "n": args.get("n", 1) if (max_photo_generations and max_photo_generations > args.get("n", 1)) else args.get("n", 1),
+                "size": args.get("size", DEFAULT_IMAGE_SIZE),
+                "quality": args.get("quality", "low"),
+            }
+            if args.get("edit_existing_photo"):
+                kwargs["images"] = [("image.png", io.BytesIO(photo), "image/png") for photo in photo_bytes]
+            return await image_client.generate(**kwargs)
+        except:
+            return []
+
+    if name == "fitting_clothes":
+        fitroom_client = FitroomClient()
+        cloth_type = (args.get("cloth_type") or "full").strip()
+        swap_photos = args.get("swap_photos") or False
+        if len(photo_bytes) != 2:
+            return "Дорогой друг, пришли фото человека и фото одежды одним сообщением! Ровно две фотографии!"
+        if swap_photos:
+            model_bytes = photo_bytes[1]
+            cloth_bytes = photo_bytes[0]
+        else:
+            model_bytes = photo_bytes[0]
+            cloth_bytes = photo_bytes[1]
+        try:
+            main_bot = get_current_bot()
+            result_bytes = await fitroom_client.try_on(
+                model_bytes=model_bytes,
+                cloth_bytes=cloth_bytes,
+                cloth_type=cloth_type,
+                send_bot=main_bot,
+                chat_id=user_id,
+                validate=False,
+            )
+            return [result_bytes]
+        except Exception:
+            return []
+        finally:
+            try:
+                await fitroom_client.close()
+            except:
+                pass
+
+    if name == "edit_image_only_with_peoples":
+        try:
+            prompt = (args.get("prompt") or "").strip()[:400]
+            prompt = prompt.encode("ascii", "ignore").decode()
+            if not prompt:
+                return []
+            return [await generate_image_bytes(prompt=args.get("prompt"), ratio=args.get("ratio"),
+                                               images=photo_bytes if len(photo_bytes) <= 3 else photo_bytes[:3])]
+        except Exception:
+            return []
+
+    return None
+
+# --- Выполнение tool-calls в режиме Chat Completions ---
+
+async def run_tools_and_followup_chat(
+    client: AsyncOpenAI,
+    model: str,
+    messages: List[dict],
+    tool_calls: List[dict],
+    user_id: int,
+    max_photo_generations: int,
+) -> Tuple[List[bytes], Optional[str], Optional[str], List[dict]]:
+    image_client = AsyncOpenAIImageClient()
+    outputs_messages: List[dict] = []
+    final_images: List[bytes] = []
+    web_answer = None
+    notif_answer = None
+    images_counter = 0
+
+    main_bot = get_current_bot()
+    from settings import sub_text
+    user = await users_repository.get_user_by_user_id(user_id=user_id)
+    user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user.user_id)
+    type_sub = await type_subscriptions_repository.get_type_subscription_by_id(type_id=user_sub.type_subscription_id) if user_sub else None
+    sub_types = await type_subscriptions_repository.select_all_type_subscriptions()
+
+    delete_message = None
+    for tc in tool_calls:
+        fname = tc["function"]["name"]
+        if user_sub is None or (type_sub is not None and type_sub.plan_name == "Free"):
+            if fname not in ("search_web", "add_notification"):
+                await main_bot.send_message(chat_id=user.user_id,
+                                            text="🚨 Эта функция доступна только по подписке\n\n" + sub_text,
+                                            reply_markup=subscriptions_keyboard(sub_types).as_markup())
+                raise NoSubscription(f"User {user.user_id} dont has active subscription")
+
+        if fname == "search_web":
+            delete_message = await main_bot.send_message(text="🔍Начал поиск в интернете, анализирую страницы...",
+                                                         chat_id=user.user_id)
+        elif fname == "add_notification":
+            delete_message = await main_bot.send_message(text="🖌Начал настраивать напоминание...",
+                                                         chat_id=user.user_id)
+        else:
+            if user_sub.photo_generations <= 0:
+                generations_packets = await generations_packets_repository.select_all_generations_packets()
+                from settings import buy_generations_text
+                if type_sub and type_sub.plan_name == "Free":
+                    await main_bot.send_message(chat_id=user.user_id,
+                                                text="🚨 Эта функция доступна только по подписке\n\n" + sub_text,
+                                                reply_markup=subscriptions_keyboard(sub_types).as_markup())
+                    raise NoSubscription(f"User {user.user_id} dont has active subscription")
+                await main_bot.send_message(chat_id=user_id, text=buy_generations_text,
+                                            reply_markup=more_generations_keyboard(generations_packets).as_markup())
+                raise NoGenerations(f"User {user.user_id} dont has generations")
+            delete_message = await main_bot.send_message(chat_id=user.user_id,
+                                                         text="🎨Начал работу над изображением, немного магии…")
+        break
+
+    try:
+        for tc in tool_calls:
+            fname = tc["function"]["name"]
+            tool_id = tc.get("id") or ""
+            result = await dispatch_tool_call(tc, image_client, user_id=user_id, max_photo_generations=max_photo_generations)
+
+            if fname == "search_web":
+                web_answer = result
+                outputs_messages.append({"role": "tool", "tool_call_id": tool_id, "content": json.dumps({"text": web_answer}, ensure_ascii=False)})
+                continue
+
+            if fname == "add_notification":
+                notif_answer = result
+                outputs_messages.append({"role": "tool", "tool_call_id": tool_id, "content": json.dumps({"text": notif_answer}, ensure_ascii=False)})
+                continue
+
+            if isinstance(result, str):
+                outputs_messages.append({"role": "tool", "tool_call_id": tool_id, "content": json.dumps({"text": result}, ensure_ascii=False)})
+                continue
+
+            if result is None:
+                outputs_messages.append({"role": "tool", "tool_call_id": tool_id, "content": "ignored"})
+                continue
+
+            if isinstance(result, list):
+                if images_counter >= max_photo_generations:
+                    outputs_messages.append({"role": "tool", "tool_call_id": tool_id, "content": "Лимит генераций исчерпан"})
+                    continue
+                images_counter += len(result)
+                final_images.extend(result)
+                file_ids = []
+                for idx, img in enumerate(result):
+                    # сохраняем как файл в Files API (purpose=vision), чтобы вернуть ids в текст
+                    f = await client.files.create(file=(f"result_{idx}.png", io.BytesIO(img), "image/png"), purpose="vision")
+                    file_ids.append(f.id)
+                outputs_messages.append({"role": "tool", "tool_call_id": tool_id,
+                                         "content": json.dumps({"file_ids": file_ids}, ensure_ascii=False)})
+            else:
+                outputs_messages.append({"role": "tool", "tool_call_id": tool_id, "content": "ok"})
+    finally:
+        if delete_message:
+            try:
+                await delete_message.delete()
+            except:
+                pass
+
+    followup_messages = messages + outputs_messages
+    comp2 = await client.chat.completions.create(
+        model=model,
+        messages=followup_messages,
+        temperature=0.7,
+    )
+
+    content_text = (comp2.choices[0].message.content or "").strip()
+    if notif_answer and "✅" in notif_answer:
+        user_notifications = await notifications_repository.get_active_notifications_by_user_id(user_id=user_id)
+        # клавиатуру вернём уже в вызывающем коде
+    return final_images, web_answer, notif_answer, [comp2.choices[0].message.model_dump()]
+
+# --- Построение контента user-сообщения (текст/изображения/документы/аудио) ---
+
+async def build_user_content_for_chat(
+    client: AsyncOpenAI,
+    text: str,
+    image_bytes: Sequence[io.BytesIO] | None,
+    document_bytes: Sequence[tuple[io.BytesIO, str, str]] | None,
+    audio_bytes: io.BytesIO | None,
+) -> List[dict]:
+    # Chat Completions: изображения – через image_url base64, документы – как текстовое перечисление
+    photos: List[dict] = []
+    content = []
+    image_names = []
+    if image_bytes:
+        for idx, img_io in enumerate(image_bytes):
+            img_io.seek(0)
+            b = img_io.read()
+            image_names.append(f"image_{idx}.png")
+            photos.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{_b64(b)}"
+                }
+            })
+
+    text_final = f"Сегодня - {get_current_datetime_string()} по Москве.\n\n{text or 'Вот информация'}"
+    if image_names:
+        text_final += f"\n\nВот названия изображений: {', '.join(image_names)}"
+
+    if document_bytes:
+        text_final += "\n\nВот названия файлов, которые я прикрепил:\n"
+        for idx, (doc_io, file_name, mime_ext) in enumerate(document_bytes):
+            doc_io.seek(0)
+            doc_file = await client.files.create(
+                file=(f"{file_name}", doc_io, f"application/{mime_ext}"),
+                purpose="user_data",
+            )
+            text += f"{file_name} "
+            content.append({
+                "type": "file",
+                "file": {"file_id": doc_file.id, "filename": file_name + "." + mime_ext},
+
+            })
+    content.append({"type": "text", "text": text_final})
+    # Chat API ожидает строку content либо массив частей с текстом/картинками.
+    if photos:
+        content.extend(photos)
+    return content   # чисто текст
+
+# --- Основной класс: полная замена Assistants→Completions ---
+
+class GPTCompletions:  # noqa: N801
+    def __init__(self):
         self.client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-        self.messages_manager = ThreadMessagesManager(self.client)
+        self.history = HistoryStore()
+
+    async def _reset_client(self):
+        self.client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
     async def send_message(
         self,
         user_id: int,
-        thread_id: str | None = None,
+        thread_id: str | None = None,      # игнорируется, оставлено для совместимости
         *,
         with_audio_transcription: bool = False,
         text: str | None = None,
@@ -167,234 +490,211 @@ class GPTCompletions:  # noqa: N801 – сохраняем схожее имя �
         document_bytes: Sequence[tuple[io.BytesIO, str, str]] | None = None,
         document_type: str | None = None,
         audio_bytes: io.BytesIO | None = None,
-        user_data = None,
+        user_data: Users | None = None,
     ):
+        final_content = {
+            "text": None,
+            "image_files": [],
+            "files": [],
+            "audio_file": None,
+            "reply_markup": None
+        }
+        main_bot = get_current_bot()
         from bot import logger
         from settings import get_weekday_russian
-        from db.repository import users_repository, subscriptions_repository, type_subscriptions_repository
-        
-        """Отправляет пользовательский запрос с опциональными вложениями через Chat Completions API."""
-        
-        # Получаем данные о пользователе и определяем актуальный thread
+
         user = await users_repository.get_user_by_user_id(user_id=user_id)
+        about_user = user.context
 
-        # Если thread_id явно не передан, пытаемся взять его из базы пользователя
-        if thread_id is None:
-            if user.standard_ai_threat_id:
-                # Используем уже существующий thread пользователя (создаём если вдруг удалён)
-                thread_id = await self.messages_manager.ensure_thread_exists(user.standard_ai_threat_id)
-            else:
-                # Создаём новый thread и сохраняем в базу
-                thread_id = await self.messages_manager.ensure_thread_exists()
-                await users_repository.update_thread_id_by_user_id(user_id=user_id, thread_id=thread_id)
-        else:
-            # Убедимся, что указанный thread существует, иначе создадим новый
-            thread_id = await self.messages_manager.ensure_thread_exists(thread_id)
+        # 1) грузим историю из БД и строим messages
+        stored = await self.history.load(user_id=user_id)
+        messages = _map_history_to_chat_messages(stored)
 
-        # lock = await get_thread_lock(thread_id)
-        # async with lock:  # ⬅️  Блокировка по thread больше не используется
-        try:
-            # Информация о пользователе уже получена выше
-            about_user = user.context if user else ""
-            
-            text = (text or "Вот информация")
-            
-            if not any([text, image_bytes, document_bytes, audio_bytes]):
-                return None
+        # 2) system-инструкции (как раньше в run.instructions)
+        system_text = (
+            "ВАЖНАЯ ИНФОРМАЦИЯ О ВРЕМЕНИ:\n"
+            f"Текущие дата и время в Москве: {get_current_datetime_string()}\n"
+            f"Сегодня {get_weekday_russian()}\n"
+            "ВСЕ уведомления и напоминания должны устанавливаться в московском времени!\n"
+            "Примеры относительных дат:\n"
+            "- 'завтра' = следующий день после сегодняшнего\n"
+            "- 'послезавтра' = через два дня\n"
+            "- 'на следующей неделе в понедельник' = ближайший понедельник после текущей недели\n"
+            "- 'через 30 минут' = добавить 30 минут к текущему времени\n\n"
+        )
+        if about_user:
+            system_text += f"Информация о пользователе:\n{about_user}\n\n"
+        messages = [{"role": "system", "content": system_text}] + messages
 
-            # Формируем контент сообщения
-            content_parts = []
-            attachments = []
-            
-            # Обрабатываем изображения
-            if image_bytes:
-                for idx, img_io in enumerate(image_bytes):
-                    img_io.seek(0)
-                    img_data = img_io.read()
-                    base64_image = base64.b64encode(img_data).decode('utf-8')
-                    content_parts.append({
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{base64_image}"
-                        }
-                    })
+        # 3) вход пользователя
+        if not any([text, image_bytes, document_bytes, audio_bytes]):
+            final_content["text"] = "Не получен контент для обработки"
+            return final_content
 
-            # Добавляем текст
-            full_text = f"Сегодня - {get_current_datetime_string()}\n\n по Москве.\n\n"
-            if about_user:
-                full_text += f"Информация о пользователе:\n{about_user}\n\n"
-            full_text += text
+        content = await build_user_content_for_chat(
+            self.client,
+            text or "",
+            image_bytes=image_bytes,
+            document_bytes=document_bytes,
+            audio_bytes=audio_bytes,
+        )
+        messages.append({"role": "user", "content": content})
 
-            content_parts.insert(0, {
-                "type": "text", 
-                "text": full_text
-            })
+        # 4) сохранить вход как JSON в БД
+        human_json = {
+            "type": "human",
+            "content": content[0].get("text") if content and isinstance(content[0], dict) else (text or ""),
+            "additional_kwargs": {"content_parts": content},  # ← сохраняем весь массив частей
+            "response_metadata": {},
+        }
 
-            # Загружаем историю сообщений
-            history_messages = await self.messages_manager.get_thread_messages(thread_id, limit=10)
-            
-            # Формируем системное сообщение
-            system_message = {
-                "role": "system",
-                "content": f"Сегодня - {get_current_datetime_string()} по Москве. День недели - {get_weekday_russian()}. "
-                           f"Ты - умный помощник AstraGPT. Помогай пользователю с различными задачами."
-            }
 
-            # Формируем полный список сообщений для API
-            messages = [system_message] + history_messages + [{
-                "role": "user",
-                "content": content_parts if len(content_parts) > 1 else content_parts[0]["text"]
-            }]
+        # 5) вызов Chat Completions
+        lock = await get_thread_lock(str(user_id))
+        async with lock:
+            try:
+                from settings import tools
+                tools_payload = _tools_for_chat_completions(tools or [])
+                comp = await self.client.chat.completions.create(
+                    model=user.model_type,
+                    messages=messages,
+                    tools=tools_payload if tools_payload else None,
+                    temperature=0.7,
+                )
+                await self.history.append(user_id=user_id, payload=human_json)
+                msg = comp.choices[0].message
+                tool_calls = getattr(msg, "tool_calls", None) or msg.model_extra.get("tool_calls") if hasattr(msg, "model_extra") else None
 
-            # Определяем доступные функции
-            from settings import tools
-
-            # Отправляем запрос к Chat Completions API
-            response = await _retry(
-                self.client.chat.completions.create,
-                model=user.model_type if user else "gpt-4o-mini",
-                messages=messages,
-                # tools=tools,
-                # tool_choice="auto",
-                timeout=30.0
-            )
-
-            message_response = response.choices[0].message
-            
-            # Обрабатываем tool calls если они есть
-            if message_response.tool_calls:
-                # Проверяем подписку пользователя
-                user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user.user_id)
-                sub_types = await type_subscriptions_repository.select_all_type_subscriptions()
-                if user_sub is None:
-                    from test_bot import test_bot
-                    from settings import sub_text
-                    await test_bot.send_message(chat_id=user.user_id,
-                                                text="🚨К сожалению, данная функция, которую ты"
-                                            " пытаешься использовать доступна только по подписке\n\n" + sub_text,
-                                                reply_markup=subscriptions_keyboard(sub_types).as_markup())
-                    await process_tool_calls(message_response.tool_calls, user_id=user.user_id)
-                    raise NoSubscription(f"User {user.user_id} dont has active subscription")
-                
-                # Показываем индикатор загрузки
-                delete_message = None
-                from bot import main_bot
-                
-                tool_call = message_response.tool_calls[0]
-                if tool_call.function.name == "search_web":
-                    delete_message = await main_bot.send_message(text="🔍Начал поиск в интернете, анализирую страницы...",
-                                                                 chat_id=user.user_id)
-                elif tool_call.function.name == "add_notification":
-                    delete_message = await main_bot.send_message(
-                        text="🖌Начал настраивать напоминание, это не займет много времени...",
-                        chat_id=user.user_id)
-                else:
-                    if user_sub.photo_generations <= 0:
-                        generations_packets = await generations_packets_repository.select_all_generations_packets()
-                        from settings import buy_generations_text
-                        await main_bot.send_message(text=buy_generations_text,
-                                                    reply_markup=more_generations_keyboard(
-                                                        generations_packets).as_markup())
-                        raise NoGenerations(f"User {user.user_id} dont has generations")
-                    delete_message = await main_bot.send_message(chat_id=user.user_id,
-                                                                 text="🎨Начал работу над изображением, немного магии…")
-                try:
-                    # Обрабатываем tool calls
-                    tool_results = await process_tool_calls(message_response.tool_calls, user_id=user.user_id)
-                    result_images = tool_results.get("final_images", [])
-                    web_answer = tool_results.get("web_answer")
-                    notification = tool_results.get("notif_answer")
-                    
-                    if len(result_images) == 0 and web_answer is None and notification is None:
-                        await delete_message.delete()
-                        return ("Не смогли сгенерировать изображение или обработать запрос😔\n\nВозможно,"
-                                " ты попросил что-то, что выходит за рамки норм")
-                        
-                    await delete_message.delete()
-                        
-                    if web_answer:
-                        # Сохраняем в thread
-                        await self.messages_manager.save_messages_to_thread(thread_id, text, web_answer)
-                        return sanitize_with_links(web_answer)
-                        
-                    if notification:
-                        # Сохраняем в thread
-                        await self.messages_manager.save_messages_to_thread(thread_id, text, notification)
-                        return sanitize_with_links(notification)
-                        
-                    elif len(result_images) != 0:
-                        final_text = "Сгенерировал изображение"
-                        # Сохраняем в thread
-                        await self.messages_manager.save_messages_to_thread(thread_id, text, final_text)
-                        return {"text": final_text, "images": result_images}
-                            
-                except Exception:
-                    print(traceback.format_exc())
-                    await delete_message.delete()
-                    logger.log(
-                        "GPT_ERROR",
-                        f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}"
+                # 6) если тулзы требуются — выполним и второй запрос
+                if tool_calls:
+                    # проверки подписок/лимитов внутри run_tools_and_followup_chat
+                    user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user.user_id)
+                    max_photo_generations = user_sub.photo_generations if user_sub else 0
+                    final_images, web_answer, notif_answer, assistant_msgs = await run_tools_and_followup_chat(
+                        client=self.client,
+                        model=user.model_type,
+                        messages=messages + [{"role": "assistant", "content": msg.content or None, "tool_calls": [tc.model_dump() for tc in tool_calls]}],
+                        tool_calls=[tc.model_dump() for tc in tool_calls],
+                        user_id=user.user_id,
+                        max_photo_generations=max_photo_generations,
                     )
-                    print_log(message=f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}")
-                    return ("Произошла непредвиденная ошибка, попробуй еще раз!"
-                            " Твой запрос может содержать контент, который"
-                            " не разрешен нашей системой безопасности")
-            else:
-                # Обычный ответ без tool calls
-                response_text = message_response.content
-                
-                # Сохраняем в thread
-                await self.messages_manager.save_messages_to_thread(thread_id, text, response_text)
-                
+
+                    # выдача пользователю
+                    if web_answer:
+                        final_text = sanitize_with_links(web_answer)
+                        ai_json = {
+                            "type": "ai",
+                            "content": final_text,
+                            "tool_calls": [],
+                            "additional_kwargs": {},
+                            "response_metadata": {},
+                            "invalid_tool_calls": [],
+                        }
+                        await self.history.append(user_id=user_id, payload=ai_json)
+                        final_content["text"] = final_text
+                        return final_content
+
+                    if notif_answer:
+                        final_text = sanitize_with_links(notif_answer)
+                        ai_json = {
+                            "type": "ai",
+                            "content": final_text,
+                            "tool_calls": [],
+                            "additional_kwargs": {},
+                            "response_metadata": {},
+                            "invalid_tool_calls": [],
+                        }
+                        await self.history.append(user_id=user_id, payload=ai_json)
+                        final_content["text"] = final_text
+                        if "✅" in final_text:
+                            user_notifications = await notifications_repository.get_active_notifications_by_user_id(user_id=user_id)
+                            final_content["reply_markup"] = delete_notification_keyboard(user_notifications[-1].id)
+                        return final_content
+
+                    if final_images:
+                        # Списание генераций
+                        if user_sub:
+                            await subscriptions_repository.use_generation(subscription_id=user_sub.id, count=len(final_images))
+                        # Текст из второго ответа
+                        assistant_text = assistant_msgs[0].get("content") or "Сгенерировал изображение"
+                        final_text = sanitize_with_links(assistant_text)
+                        ai_json = {
+                            "type": "ai",
+                            "content": final_text,
+                            "tool_calls": [],
+                            "additional_kwargs": {},
+                            "response_metadata": {},
+                            "invalid_tool_calls": [],
+                        }
+                        await self.history.append(user_id=user_id, payload=ai_json)
+                        final_content["text"] = final_text
+                        final_content["image_files"] = final_images
+                        return final_content
+
+                    # если тулзы отработали, но ничего не вернули ощутимого
+                    final_text = (assistant_msgs[0].get("content") or "").strip() or "Не удалось обработать запрос."
+                    final_text = sanitize_with_links(final_text)
+                    ai_json = {
+                        "type": "ai",
+                        "content": final_text,
+                        "tool_calls": [],
+                        "additional_kwargs": {},
+                        "response_metadata": {},
+                        "invalid_tool_calls": [],
+                    }
+                    await self.history.append(user_id=user_id, payload=ai_json)
+                    final_content["text"] = final_text
+                    return final_content
+
+                # 7) обычный ответ ассистента без тулзов
+                message_text = msg.content or ""
                 if with_audio_transcription:
-                    audio_data = await self.generate_audio_by_text(response_text)
-                    return sanitize_with_links(response_text), audio_data
-                
-                return sanitize_with_links(response_text)
+                    audio_data = await tts_generate_audio_mp3(message_text)
+                    final_text = sanitize_with_links(message_text)
+                    ai_json = {
+                        "type": "ai",
+                        "content": final_text,
+                        "tool_calls": [],
+                        "additional_kwargs": {},
+                        "response_metadata": {},
+                        "invalid_tool_calls": [],
+                    }
+                    await self.history.append(user_id=user_id, payload=ai_json)
+                    final_content["text"] = final_text
+                    final_content["audio_file"] = audio_data
+                    return final_content
 
-        except NoSubscription:  # 1. пропускаем тарифные ошибки
-            raise
-        except NoGenerations:  # 1. пропускаем тарифные ошибки
-            raise
-        except Exception:
-            traceback.print_exc()
-            await self._reset_client()
-            logger.log(
-                "GPT_ERROR",
-                f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}"
-            )
-            print_log(message=f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}")
-            return ("Произошла непредвиденная ошибка, попробуй еще раз! Твой запрос может содержать"
-                    " контент, который не разрешен нашей системой безопасности")
+                final_text = sanitize_with_links(message_text)
+                ai_json = {
+                    "type": "ai",
+                    "content": final_text,
+                    "tool_calls": [],
+                    "additional_kwargs": {},
+                    "response_metadata": {},
+                    "invalid_tool_calls": [],
+                }
+                await self.history.append(user_id=user_id, payload=ai_json)
+                final_content["text"] = final_text
+                return final_content
 
-    # -------- вспомогательные методы --------
-    @staticmethod
-    async def generate_audio_by_text(text: str) -> io.BytesIO:
-        """TTS‑синтез ответа в mp3 через /audio/speech."""
-        url = "https://api.openai.com/v1/audio/speech"
-        headers = {
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": "gpt-4o-mini-tts",
-            "input": text,
-            "voice": "shimmer",
-            "instructions": "Speak dramatic",
-            "response_format": "mp3",
-        }
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=payload, timeout=30) as response:
-                if response.status == 200:
-                    return io.BytesIO(await response.read())
-                raise RuntimeError(f"TTS error {response.status}: {await response.text()}")
+            except NoSubscription:
+                raise
+            except NoGenerations:
+                raise
+            except Exception:
+                await self._reset_client()
+                logger.log("GPT_ERROR", f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}")
+                print_log(message=f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}")
+                final_content["text"] = ("Произошла непредвиденная ошибка, попробуй еще раз! "
+                                         "Твой запрос может содержать контент, который не разрешен нашей системой безопасности")
+                return final_content
 
     @staticmethod
     async def transcribe_audio(audio_bytes: io.BytesIO, language: str = "ru") -> str:
         """Возвращает текстовую расшифровку аудио через Whisper."""
         url = "https://api.openai.com/v1/audio/transcriptions"
         headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+
         audio_bytes.name = "audio.mp3"
         data = {"file": audio_bytes, "model": "whisper-1", "language": language}
 
@@ -404,118 +704,3 @@ class GPTCompletions:  # noqa: N801 – сохраняем схожее имя �
                     result = await response.json()
                     return result.get("text", "")
                 raise RuntimeError(f"Transcription error {response.status}: {await response.text()}")
-
-    async def _reset_client(self):
-        """Переинициализирует клиента OpenAI."""
-        self.client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-        self.messages_manager = ThreadMessagesManager(self.client)
-
-
-async def dispatch_tool_call_completions(tool_call, user_id: int) -> Any:
-    """
-    Обрабатывает tool call для Chat Completions API
-    """
-    from bot import main_bot
-    from db.repository import users_repository
-    
-    # Извлекаем имя и аргументы функции
-    name = tool_call.function.name
-    args_raw = tool_call.function.arguments
-    
-    # Парсим аргументы
-    if isinstance(args_raw, dict):
-        args = args_raw
-    else:
-        try:
-            args = json.loads(args_raw)
-        except json.JSONDecodeError:
-            # Попытка исправить неполный JSON
-            first_obj = args_raw.split('}', 1)[0] + '}'
-            args = json.loads(first_obj)
-    
-    user = await users_repository.get_user_by_user_id(user_id=user_id)
-    photo_bytes = []
-    
-    if name == "add_notification":
-        when_send_str, text_notification = args.get("when_send_str"), args.get("text_notification")
-        try:
-            await schedule_notification(user_id=user.user_id,
-                                        when_send_str=when_send_str,
-                                        text_notification=text_notification)
-            return f"Отлично, добавили уведомление на {when_send_str} по московскому времени\n\nТекст уведомления: {text_notification}"
-        except NotificationSchedulerError:
-            print(traceback.format_exc())
-            return "Нельзя запланировать уведомление на прошлое время или неверный формат даты/времени"
-    
-    if name == "search_web":
-        query = args.get("query") or ""
-        result = await web_search_agent.search_prompt(query)
-        return result
-    
-    # Получаем последние изображения пользователя для редактирования
-    if user.last_image_id is not None:
-        for photo_id in user.last_image_id.split(", "):
-            photo_bytes_io = io.BytesIO()
-            await main_bot.download(photo_id, destination=photo_bytes_io)
-            photo_bytes_io.seek(0)
-            photo_bytes.append(photo_bytes_io.read())
-    
-    if name == "generate_image":
-        try:
-            image_client = AsyncOpenAIImageClient()
-            kwargs: dict[str, Any] = {
-                "prompt": args["prompt"],
-                "n": args.get("n", 1),
-                "size": args.get("size", DEFAULT_IMAGE_SIZE),
-                "quality": args.get("quality", "low"),
-            }
-            
-            if args.get("edit_existing_photo"):
-                kwargs["images"] = [("image.png", io.BytesIO(photo), "image/png") for photo in photo_bytes]
-            
-            return await image_client.generate(**kwargs)
-        except:
-            return []
-
-    if name == "edit_image_only_with_peoples":
-        try:
-            prompt = args.get("prompt", "").strip()
-            prompt = prompt[:400]  # максимум 400 символов
-            prompt = prompt.encode('ascii', 'ignore').decode()
-            if not prompt:
-                return []
-            return [await generate_image_bytes(prompt=args.get("prompt"), ratio=args.get("ratio"),
-                                               images=photo_bytes if len(photo_bytes) <= 3 else photo_bytes[:3])]
-        except RuntimeError as e:
-            print(f"Runway task failed for prompt «{prompt}»: {e}")
-            return []
-        except Exception as e:
-            from bot import logger
-            logger.log(
-                "GPT_ERROR",
-                f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}"
-            )
-            print_log(message=f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}")
-            return []
-    
-    return None
-
-
-async def process_tool_calls(tool_calls, user_id: int):
-    """Обрабатывает все tool calls и возвращает результаты"""
-    final_images = []
-    web_answer = None
-    text_answer = None
-    
-    for tool_call in tool_calls:
-        if tool_call.function.name in ["search_web", "add_notification"]:
-            text_answer = await dispatch_tool_call_completions(tool_call, user_id=user_id)
-            web_answer = text_answer
-            continue
-        
-        images = await dispatch_tool_call_completions(tool_call, user_id=user_id)
-        if images:
-            final_images.extend(images)
-    
-    return {"final_images": final_images, "web_answer": web_answer, "notif_answer": text_answer}
-

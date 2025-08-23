@@ -16,7 +16,7 @@ set_default_openai_key(API_KEY)
 agent = Agent(
     name="WebSearchAgent",
     tools=[WebSearchTool()],
-    model="gpt-4o",
+    model="gpt-5-mini",
 
 )
 

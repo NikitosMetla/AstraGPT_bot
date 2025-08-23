@@ -86,7 +86,7 @@ async def enter_user_email(message: types.Message, state: FSMContext, bot: Bot):
         keyboard = await keyboard_for_pay(operation_id=operation.id, url=payment[1], time_limit=30,
                                           type_sub_id=type_sub_id)
         await message.answer(text=f'Для дальнейше работы ассистента нужно приобрести подписку'
-                                       f' за 299 рублей.\n\nПосле проведения платежа нажми на кнопку "Оплата произведена",'
+                                       f' за {price} рублей.\n\nПосле проведения платежа нажми на кнопку "Оплата произведена",'
                                        ' чтобы подтвердить платеж', reply_markup=keyboard.as_markup())
         try:
             del_message_id = int(data.get("del_message_id"))

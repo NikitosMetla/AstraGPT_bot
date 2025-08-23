@@ -108,6 +108,16 @@ class UserRepository:
                 await session.execute(sql)
                 await session.commit()
 
+    async def update_last_response_id_by_user_id(self, last_response_id: str, user_id: int):
+        async with self.session_maker() as session:
+            session: AsyncSession
+            async with session.begin():
+                sql = update(Users).values({
+                    Users.last_response_id: last_response_id
+                }).where(or_(Users.user_id == user_id))
+                await session.execute(sql)
+                await session.commit()
+
     async def get_user_creation_statistics(self) -> dict[str, int]:
         async with self.session_maker() as session:
             session: AsyncSession

@@ -6,13 +6,16 @@ from aiogram import Router, F, Bot, types
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import any_state
 from aiogram.types import Message, CallbackQuery, BufferedInputFile, InputMediaPhoto
+from aiogram.utils.chat_action import ChatActionSender
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram_media_group import media_group_handler
 
 from data.keyboards import profiles_keyboard, cancel_keyboard, settings_keyboard, \
-    confirm_clear_context, buy_sub_keyboard, subscriptions_keyboard, delete_payment_keyboard, unlink_card_keyboard
+    confirm_clear_context, buy_sub_keyboard, subscriptions_keyboard, delete_payment_keyboard, unlink_card_keyboard, \
+    confirm_delete_notification_keyboard, delete_notification_keyboard
 from db.repository import users_repository, ai_requests_repository, subscriptions_repository, \
-    type_subscriptions_repository
-from settings import InputMessage, photos_pages, OPENAI_ALLOWED_DOC_EXTS, gpt_assistant, sub_text, gpt_completions
+    type_subscriptions_repository, notifications_repository
+from settings import InputMessage, photos_pages, OPENAI_ALLOWED_DOC_EXTS, gpt_assistant, sub_text
 from utils.combined_gpt_tools import NoSubscription, NoGenerations
 from utils.is_subscriber import is_subscriber
 from utils.paginator import MechanicsPaginator
@@ -29,13 +32,14 @@ async def process_ai_response(ai_response, message: Message, user_id: int, bot: 
     
     # Если ответ не является словарем (обратная совместимость), преобразуем
     if not isinstance(ai_response, dict):
-        ai_response = {"text": str(ai_response), "image_files": [], "files": [], "audio_file": None}
+        ai_response = {"text": str(ai_response), "image_files": [], "files": [], "audio_file": None, "reply_markup": None}
     
     # Извлекаем данные из final_content
     text = ai_response.get("text", "")
     image_files = ai_response.get("image_files", [])
     files = ai_response.get("files", [])
     audio_file = ai_response.get("audio_file")
+    reply_markup: InlineKeyboardBuilder | None = ai_response.get("reply_markup", None)
     
     # Обработка файлов (документы, изображения от ассистента)
     if files:
@@ -45,29 +49,34 @@ async def process_ai_response(ai_response, message: Message, user_id: int, bot: 
                     document=BufferedInputFile(
                         file=file_data.get("bytes"),
                         filename=file_data.get("filename")
-                    )
+                    ),
+                    reply_markup=reply_markup.as_markup() if reply_markup else None,
                 )
                 text = text or "🤖Сгенерированный файл"
             except Exception:
                 print(traceback.format_exc())
-                await message.answer("Возникла ошибка при отправке файла, попробуй еще раз")
+                await message.answer("Возникла ошибка при отправке файла, попробуй еще раз",
+                                     reply_markup=reply_markup.as_markup() if reply_markup else None,)
                 return
     
     # Обработка изображений
     if image_files:
-        raw = image_files[0]
-        buffer = io.BytesIO(raw)
-        buffer.seek(0)
-        
-        photo = BufferedInputFile(file=buffer.getvalue(), filename="image.png")
-        reply_message = await message.reply_photo(
-            text=text,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-            photo=photo
-        )
+        photos_ids = []
+        for raw in image_files:
+            buffer = io.BytesIO(raw)
+            buffer.seek(0)
+
+            photo = BufferedInputFile(file=buffer.getvalue(), filename="image.png")
+            reply_message = await message.reply_photo(
+                text=text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+                photo=photo,
+                reply_markup=reply_markup.as_markup() if reply_markup else None,
+            )
+            photos_ids.append(reply_message.photo[-1].file_id)
         await users_repository.update_last_photo_id_by_user_id(
-            photo_id=reply_message.photo[-1].file_id, 
+            photo_id=", ".join(photos_ids),
             user_id=user_id
         )
     else:
@@ -79,7 +88,8 @@ async def process_ai_response(ai_response, message: Message, user_id: int, bot: 
                 await message.reply(
                     chunk,
                     disable_web_page_preview=True,
-                    parse_mode=ParseMode.HTML
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup.as_markup() if reply_markup else None,
                 )
 
     # Сохранение запроса в БД
@@ -94,6 +104,33 @@ async def process_ai_response(ai_response, message: Message, user_id: int, bot: 
         has_files=has_files,
         file_id=file_id
     )
+
+
+@standard_router.callback_query(F.data.startswith("delete_notification"))
+async def delete_notification_handler(call: CallbackQuery, state: FSMContext, bot: Bot):
+    call_data = call.data.split("|")
+    notif_id = int(call_data[1])
+    notif = await notifications_repository.get_notification_info_by_id(id=notif_id)
+    await call.message.edit_text(text=f'Ты уверен, что готов удалить уведомление об:'
+                                      f' "{notif.text_notification}", которое должно'
+                                      f' прийти {notif.when_send.strftime("%d-%m-%Y %H:%M")}?',
+                                 reply_markup=confirm_delete_notification_keyboard(notif_id).as_markup())
+
+@standard_router.callback_query(F.data.startswith("confirm_delete_notification|"))
+async def confirm_delete_notification_handler(call: CallbackQuery, state: FSMContext, bot: Bot):
+    call_data = call.data.split("|")
+    answer = call_data[1]
+    notif_id = int(call_data[2])
+    notif = await notifications_repository.get_notification_info_by_id(id=notif_id)
+    if answer == "yes":
+        await notifications_repository.delete_active_by_notification_id(notification_id=notif_id)
+        await call.message.answer(f'✅Отлично, отменили твое напоминание об - "{notif.text_notification}"'
+                                  f' на {notif.when_send.strftime("%d-%m-%Y %H:%M")}')
+        await call.message.delete()
+        return
+    text = (f"✅ Отлично! Уведомление установлено на {notif.when_send.strftime('%d-%m-%Y %H:%M')}"
+            f" по московскому времени\n\n📝 Текст напоминания: {notif.text_notification}")
+    await call.message.edit_text(text=text, reply_markup=delete_notification_keyboard(notif_id).as_markup())
 
 
 @standard_router.callback_query(F.data == "delete_payment", any_state)
@@ -217,11 +254,16 @@ async def send_user_message(message: Message, state: FSMContext, bot: Bot):
                          reply_markup=settings_keyboard.as_markup())
 
 
+@standard_router.message(F.text == "/support", any_state)
+async def send_user_message(message: Message, state: FSMContext, bot: Bot):
+    await message.answer('☎️ Дорогой друг, чтобы связаться с нами - напиши в наш чат поддержки @sozdav_ai')
+
+
 @standard_router.callback_query(F.data == "edit_user_context", any_state)
 async def send_user_message(call: CallbackQuery, state: FSMContext, bot: Bot):
     user = await users_repository.get_user_by_user_id(user_id=call.from_user.id)
     delete_message = await call.message.answer(f"AstraGPT запомнит всю информацию, которую вы сейчас"
-                              f" введете и будет учитывать ее при составление ответов для вас!\n\nВаш нынешний контекст:\n{user.context}",
+                              f" введете и будет учитывать ее при составлении ответов для вас!\n\nВаш нынешний контекст:\n{user.context}",
                               reply_markup=cancel_keyboard.as_markup())
     await state.set_state(InputMessage.enter_user_context_state)
     await call.message.delete()
@@ -240,7 +282,7 @@ async def send_user_message(call: CallbackQuery, state: FSMContext, bot: Bot):
             message_id=pinned.message_id  # ID открепляемого сообщения
         )
     if mode == "universal":
-        await users_repository.update_model_type_by_user_id(model_type="gpt-4.1-nano", user_id=call.from_user.id)
+        await users_repository.update_model_type_by_user_id(model_type="gpt-4.1-mini", user_id=call.from_user.id)
         pin_message = await call.message.answer("Активная модель - 🤖Универсальная")
     else:
         await users_repository.update_model_type_by_user_id(model_type="gpt-4.1", user_id=call.from_user.id)
@@ -278,23 +320,23 @@ async def standard_message_handler(message: Message, bot: Bot):
     #                          reply_markup=buy_sub_keyboard.as_markup())
     #     return
     # delete_message = await message.reply("Формулирую ответ, это займет не более 5 секунд")
-    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    try:
-        ai_answer = await gpt_completions.send_message(
-            user_id=user_id,
-            text=message.text
-        )
-    except:
-        print(traceback.format_exc())
-    try:
-        ai_answer = await gpt_assistant.send_message(user_id=user_id,
-                                                     thread_id=user.standard_ai_threat_id,
-                                                     text=text,
-                                                     user_data=user)
-    except NoSubscription:
-        return
-    except NoGenerations:
-        return
+    async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
+        try:
+            ai_answer = await gpt_assistant.send_message(
+                user_id=user_id,
+                text=message.text
+            )
+        except:
+            print(traceback.format_exc())
+        try:
+            ai_answer = await gpt_assistant.send_message(user_id=user_id,
+                                                         thread_id=user.standard_ai_threat_id,
+                                                         text=text,
+                                                         user_data=user)
+        except NoSubscription:
+            return
+        except NoGenerations:
+            return
     
     # Используем новую функцию для обработки ответа
     await process_ai_response(
@@ -324,12 +366,13 @@ async def handle_photo_album(messages: list[types.Message], bot: Bot):
     # Скачиваем все фото → BytesIO
     image_buffers: list[io.BytesIO] = []
     photo_ids: list[str] = []
+    messages.sort(key=lambda x: x.message_id)
     for msg in messages:
         buf = io.BytesIO()
         await bot.download(msg.photo[-1], destination=buf)
         image_buffers.append(buf)
         photo_ids.append(msg.photo[-1].file_id)
-        print(msg.photo[-1].file_id)
+        # print(msg.photo[-1].file_id)
     await users_repository.update_last_photo_id_by_user_id(photo_id=", ".join(photo_ids), user_id=user_id)
     # Отправляем весь список в GPT
     await bot.send_chat_action(chat_id=first.chat.id, action="typing")
@@ -368,42 +411,41 @@ async def standard_message_photo_handler(message: Message, bot: Bot):
     #     await message.answer("Чтобы общаться со стандартным GPT у тебя должна быть подписка",
     #                          reply_markup=buy_sub_keyboard.as_markup())
     #     return
-    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    text = message.caption
-    photo_bytes_io = io.BytesIO()
-    photo_id = message.photo[-1].file_id
-    print(photo_id)
-    await users_repository.update_last_photo_id_by_user_id(photo_id=photo_id, user_id=user_id)
-    # print(photo_id)
-    await bot.download(message.photo[-1], destination=photo_bytes_io)
-    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    # try:
-    #     ai_photo = await generate_image_bytes(prompt=message.caption, images=[photo_bytes_io.getvalue()])
-    #     await message.answer_photo(BufferedInputFile(file=ai_photo, filename="image.png"))
-    # except Exception as e:
-    #     await message.answer("ошибка")
-    # print()
-    try:
-        ai_answer = await gpt_assistant.send_message(user_id=user.user_id,
-                                                     thread_id=user.standard_ai_threat_id,
-                                                     text=text,
-                                                     user_data=user,
-                                                     image_bytes=[photo_bytes_io])
-    except NoSubscription:
-        return
-    except NoGenerations:
-        return
-    
-    # Используем новую функцию для обработки ответа
-    await process_ai_response(
-        ai_response=ai_answer,
-        message=message,
-        user_id=user_id,
-        bot=bot,
-        request_text=message.caption,
-        photo_id=photo_id,
-        has_photo=True
-    )
+    async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
+        text = message.caption
+        photo_bytes_io = io.BytesIO()
+        photo_id = message.photo[-1].file_id
+        # print(photo_id)
+        await users_repository.update_last_photo_id_by_user_id(photo_id=photo_id, user_id=user_id)
+        # print(photo_id)
+        await bot.download(message.photo[-1], destination=photo_bytes_io)
+        # try:
+        #     ai_photo = await generate_image_bytes(prompt=message.caption, images=[photo_bytes_io.getvalue()])
+        #     await message.answer_photo(BufferedInputFile(file=ai_photo, filename="image.png"))
+        # except Exception as e:
+        #     await message.answer("ошибка")
+        # print()
+        try:
+            ai_answer = await gpt_assistant.send_message(user_id=user.user_id,
+                                                         thread_id=user.standard_ai_threat_id,
+                                                         text=text,
+                                                         user_data=user,
+                                                         image_bytes=[photo_bytes_io])
+        except NoSubscription:
+            return
+        except NoGenerations:
+            return
+
+        # Используем новую функцию для обработки ответа
+        await process_ai_response(
+            ai_response=ai_answer,
+            message=message,
+            user_id=user_id,
+            bot=bot,
+            request_text=message.caption,
+            photo_id=photo_id,
+            has_photo=True
+        )
 
 
 @standard_router.message(F.voice)
@@ -417,37 +459,37 @@ async def standard_message_voice_handler(message: Message, state: FSMContext, bo
     #     await message.answer("Чтобы общаться со стандартным GPT у тебя должна быть подписка",
     #                          reply_markup=buy_sub_keyboard.as_markup())
     #     return
-    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    audio_bytes_io = io.BytesIO()
-    message_voice_id = message.voice.file_id
-    await bot.download(message_voice_id, destination=audio_bytes_io)
-    try:
-        transcribed_audio_text = await gpt_assistant.transcribe_audio(audio_bytes=audio_bytes_io)
-    except:
-        await message.answer("Не могу распознать, что в голосовом сообщении, попробуй еще раз")
-        return
-    # print(transcribed_audio_text)
-    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    try:
-        ai_answer = await gpt_assistant.send_message(
+    async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
+        audio_bytes_io = io.BytesIO()
+        message_voice_id = message.voice.file_id
+        await bot.download(message_voice_id, destination=audio_bytes_io)
+        try:
+            transcribed_audio_text = await gpt_assistant.transcribe_audio(audio_bytes=audio_bytes_io)
+        except:
+            print(traceback.format_exc())
+            await message.answer("Не могу распознать, что в голосовом сообщении, попробуй еще раз")
+            return
+        # print(transcribed_audio_text)
+        try:
+            ai_answer = await gpt_assistant.send_message(
+                user_id=user_id,
+                thread_id=user.standard_ai_threat_id,
+                text=transcribed_audio_text,
+                user_data=user)
+        except NoSubscription:
+            return
+        except NoGenerations:
+            return
+
+        # Используем новую функцию для обработки ответа
+        await process_ai_response(
+            ai_response=ai_answer,
+            message=message,
             user_id=user_id,
-            thread_id=user.standard_ai_threat_id,
-            text=transcribed_audio_text,
-            user_data=user)
-    except NoSubscription:
-        return
-    except NoGenerations:
-        return
-    
-    # Используем новую функцию для обработки ответа
-    await process_ai_response(
-        ai_response=ai_answer,
-        message=message,
-        user_id=user_id,
-        bot=bot,
-        request_text=transcribed_audio_text,
-        has_audio=True
-    )
+            bot=bot,
+            request_text=transcribed_audio_text,
+            has_audio=True
+        )
 
 
 @standard_router.message(
@@ -456,7 +498,7 @@ async def standard_message_voice_handler(message: Message, state: FSMContext, bo
 )
 @media_group_handler
 @is_subscriber
-async def handle_document_album(messages: list[types.Message], bot: Bot, state: FSMContext):
+async def handle_document_album(messages: list[types.Message],  state: FSMContext, bot: Bot,):
     first = messages[-1]
     user_id = first.from_user.id
     user = await users_repository.get_user_by_user_id(user_id=user_id)
@@ -470,7 +512,7 @@ async def handle_document_album(messages: list[types.Message], bot: Bot, state: 
         buf = io.BytesIO()
         await bot.download(msg.document, destination=buf)
         file_name = msg.document.file_name
-        print(file_name)
+        # print(file_name)
         ext = file_name.split('.')[-1].lower()
         if ext not in OPENAI_ALLOWED_DOC_EXTS:
             await first.reply(
@@ -523,7 +565,7 @@ async def handle_document_album(messages: list[types.Message], bot: Bot, state: 
 
 @standard_router.message(F.document, F.media_group_id.is_(None))
 @is_subscriber
-async def standard_message_document_handler(message: Message, bot: Bot, state: FSMContext):
+async def standard_message_document_handler(message: Message, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
     user = await users_repository.get_user_by_user_id(user_id=user_id)
     # if user is not None and user.full_registration:
@@ -532,58 +574,64 @@ async def standard_message_document_handler(message: Message, bot: Bot, state: F
     #     await message.answer("Чтобы общаться со стандартным GPT у тебя должна быть подписка",
     #                          reply_markup=buy_sub_keyboard.as_markup())
     #     return
-    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    # delete_message = await message.reply("Формулирую ответ, это займет не более 5 секунд")
-    text = message.caption
-    buf = io.BytesIO()
-    await bot.download(message.document, destination=buf)
-    file_name = message.document.file_name
-    # print(file_name)
-    ext = file_name.split('.')[-1].lower()
-    if ext not in OPENAI_ALLOWED_DOC_EXTS:
-        await message.reply(
-            f"⚠️ Формат файла «{message.document.file_name}» не поддерживается. "
-            f"Пришлите один из форматов: {', '.join(sorted(OPENAI_ALLOWED_DOC_EXTS))}"
-        )
-        return
-    if message.document.file_name:
-        # Получаем расширение из имени файла
-        extension = message.document.file_name.split('.')[-1].lower()
-        if extension in ['jpg', 'jpeg', 'png', "DNG", "gif", "dng"]:
-            await users_repository.update_last_photo_id_by_user_id(photo_id=message.document.file_id, user_id=user_id)
-            try:
-                ai_answer = await gpt_assistant.send_message(user_id=user_id,
-                                                             thread_id=user.standard_ai_threat_id,
-                                                             text=text,
-                                                             user_data=user,
-                                                             image_bytes=[buf])
-            except NoSubscription:
-                return
-            except NoGenerations:
-                return
-        else:
-            try:
-                ai_answer = await gpt_assistant.send_message(user_id=user_id,
-                                                             thread_id=user.standard_ai_threat_id,
-                                                             text=text,
-                                                             user_data=user,
-                                                             document_bytes=[(buf, file_name, ext)],
-                                                             document_type=extension)
-            except NoSubscription:
-                return
-            except NoGenerations:
-                return
-                
-        # Используем новую функцию для обработки ответа
-        await process_ai_response(
-            ai_response=ai_answer,
-            message=message,
-            user_id=user_id,
-            bot=bot,
-            request_text=message.caption,
-            has_files=True,
-            file_id=message.document.file_id
-        )
+    async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
+        # delete_message = await message.reply("Формулирую ответ, это займет не более 5 секунд")
+        text = message.caption
+        # print(text)
+        buf = io.BytesIO()
+        file_id = message.document.file_id
+        # print(file_id)
+        await bot.download(message.document.file_id, destination=buf)
+
+
+        file_name = message.document.file_name
+        ext = file_name.split('.')[-1].lower()
+        if ext not in OPENAI_ALLOWED_DOC_EXTS:
+            await message.reply(
+                f"⚠️ Формат файла «{message.document.file_name}» не поддерживается. "
+                f"Пришлите один из форматов: {', '.join(sorted(OPENAI_ALLOWED_DOC_EXTS))}"
+            )
+            return
+        # print("slkdjfslkdjfklsdf")
+        if message.document.file_name:
+            # Получаем расширение из имени файла
+            extension = message.document.file_name.split('.')[-1].lower()
+            if extension in ['jpg', 'jpeg', 'png', "DNG", "gif", "dng"]:
+                await users_repository.update_last_photo_id_by_user_id(photo_id=message.document.file_id, user_id=user_id)
+                try:
+                    ai_answer = await gpt_assistant.send_message(user_id=user_id,
+                                                                 thread_id=user.standard_ai_threat_id,
+                                                                 text=text,
+                                                                 user_data=user,
+                                                                 image_bytes=[buf])
+                except NoSubscription:
+                    return
+                except NoGenerations:
+                    return
+            else:
+                try:
+                    ai_answer = await gpt_assistant.send_message(user_id=user_id,
+                                                                 thread_id=user.standard_ai_threat_id,
+                                                                 text=text,
+                                                                 user_data=user,
+                                                                 document_bytes=[(buf, file_name, ext)],
+                                                                 document_type=extension)
+                    # print(ai_answer)
+                except NoSubscription:
+                    return
+                except NoGenerations:
+                    return
+
+            # Используем новую функцию для обработки ответа
+            await process_ai_response(
+                ai_response=ai_answer,
+                message=message,
+                user_id=user_id,
+                bot=bot,
+                request_text=message.caption,
+                has_files=True,
+                file_id=message.document.file_id
+            )
 
 
 

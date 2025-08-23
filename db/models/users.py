@@ -24,6 +24,7 @@ class Users(BaseModel, CleanModel):
     context = Column(String, nullable=True, unique=False)
     model_type = Column(String, nullable=True, unique=False, default="gpt-4o-mini")
     last_image_id = Column(String, nullable=True, unique=False)
+    last_response_id = Column(String, nullable=True, unique=False)
 
     @property
     def stats(self) -> str:

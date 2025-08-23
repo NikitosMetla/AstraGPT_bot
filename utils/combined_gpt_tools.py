@@ -5,10 +5,9 @@ import base64
 import io
 import json
 import os
-import pprint
 import traceback
 from collections import defaultdict
-from typing import Any, Awaitable, Callable, Optional, Sequence, Literal
+from typing import Any, Awaitable, Callable, Optional, Sequence
 from typing import Dict
 
 import aiohttp
@@ -22,10 +21,21 @@ from openai import (
     PermissionDeniedError,
     RateLimitError, BadRequestError, )
 
-from data.keyboards import subscriptions_keyboard, more_generations_keyboard
+from data.keyboards import subscriptions_keyboard, more_generations_keyboard, delete_notification_keyboard
 from settings import get_current_datetime_string, print_log, get_current_bot
 from utils import web_search_agent
-from utils.create_notification import schedule_notification, NotificationSchedulerError, NotificationLimitError
+from utils.create_notification import (
+    schedule_notification,
+    NotificationLimitError,
+    NotificationFormatError,
+    NotificationDateTooFarError,
+    NotificationDateInPastError,
+    NotificationPastTimeError,
+    NotificationTextTooShortError,
+    NotificationTextTooLongError
+)
+from utils.gpt_images import AsyncOpenAIImageClient
+from utils.new_fitroom_api import FitroomClient
 from utils.parse_gpt_text import sanitize_with_links
 from utils.runway_api import generate_image_bytes
 
@@ -91,20 +101,11 @@ def _strip_response_format(kwargs: dict) -> dict:
 
 UNSUPPORTED_FOR_GPT_IMAGE = {"response_format", "style"}
 
-def _strip_unsupported_params(kwargs: dict) -> dict:
-    if (kwargs.get("model") or DEFAULT_IMAGE_MODEL).startswith("gpt-image-1"):
-        for p in UNSUPPORTED_FOR_GPT_IMAGE:
-            kwargs.pop(p, None)
-    return kwargs
-
 
 def _b64(b: bytes) -> str:
     """Возвращает Base64‑строку из байтов."""
     return base64.b64encode(b).decode()
 
-def _b64decode(s: str) -> bytes:
-    """Декодирует Base64‑строку в байты."""
-    return base64.b64decode(s)
 
 async def _retry(
     fn: Callable[..., Awaitable[Any]],
@@ -124,58 +125,6 @@ async def _retry(
         except (AuthenticationError, PermissionDeniedError):
             raise  # ошибки неустранимы
 
-class AsyncOpenAIImageClient:
-    """Асинхронный обёртка над Image‑эндпоинтами OpenAI."""
-
-    def __init__(
-        self,
-        *,
-        api_key: str | None = OPENAI_API_KEY,
-        organization: str | None = None,
-        default_model: str = DEFAULT_IMAGE_MODEL,
-        vision_model: str = "gpt-4o-mini",
-    ) -> None:
-        """Создаёт клиента с базовыми моделями изображения и vision."""
-        self.client = AsyncOpenAI(api_key=api_key, organization=organization)
-        self.default_model = default_model
-        self.vision_model = vision_model  # используется в ImageChatSession
-
-    # ---------- 1. GENERATE ----------
-    async def generate(
-            self,
-            prompt: str,
-            *,
-            n: int = 1,
-            size: str = DEFAULT_IMAGE_SIZE,
-            quality: Literal["high", "medium", "low"] = "medium",
-            user: str | None = None,
-            model: str | None = None,
-            images: Any | None = None,
-    ) -> list[bytes]:
-        model = model or self.default_model
-        if images is None:
-            params: dict[str, Any] = {
-                "model": model,
-                "prompt": prompt,
-                "n": n,
-                "size": size,
-                "quality": quality,
-                "response_format": "b64_json",
-                "user": user,
-                "timeout": 120
-            }
-            params = _strip_unsupported_params(params)
-            rsp = await _retry(self.client.images.generate, **params)
-            return [_b64decode(item.b64_json) for item in rsp.data]
-        params: dict[str, Any] = {
-            "model": model,
-            "prompt": prompt,
-            "image": images[0],
-            "timeout": 120
-        }
-        rsp = await _retry(self.client.images.edit, **params)
-        return [_b64decode(item.b64_json) for item in rsp.data]
-
 
 
 
@@ -185,8 +134,6 @@ def _image_content(b: bytes, detail: str = "auto") -> dict:
     return {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_b64(b)}"}, "detail": detail}
 
 
-
-from os import getenv as _getenv
 from db.models import Users
 from db.repository import users_repository, subscriptions_repository, type_subscriptions_repository, \
     generations_packets_repository, notifications_repository
@@ -312,7 +259,8 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
             "text": None,
             "image_files": [],
             "files": [],
-            "audio_file": None
+            "audio_file": None,
+            "reply_markup": None
         }
         main_bot = get_current_bot()
         from bot import logger
@@ -416,11 +364,13 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                                                             reply_markup=more_generations_keyboard(generations_packets).as_markup())
                                 # await process_assistant_run(message_response.tool_calls, user_id=user.user_id)
                                 raise NoGenerations(f"User {user.user_id} dont has generations")
-                            delete_message = await main_bot.send_message(chat_id=user.user_id,
-                                                                         text="🎨Начал работу над изображением, немного магии…")
+                            if tc.function.name != "fitting_clothes":
+                                delete_message = await main_bot.send_message(chat_id=user.user_id,
+                                                                             text="🎨Начал работу над изображением, немного магии…")
                         break
                     try:
-                        result = await process_assistant_run(self.client, run, thread_id, user_id=user.user_id)
+                        result = await process_assistant_run(self.client, run, thread_id, user_id=user.user_id,
+                                                             max_photo_generations=user_sub.photo_generations)
                         result_images = result.get("final_images")
                         web_answer: str = result.get("web_answer")
                         notification: str = result.get("notif_answer")
@@ -435,16 +385,20 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                                         " ты попросил что-то, что выходит за рамки норм")
                                 return final_content
                         messages = await self.client.beta.threads.messages.list(thread_id=thread_id)
-                        await delete_message.delete()
+                        if delete_message:
+                            await delete_message.delete()
                         first_msg = messages.data[0]
                         if web_answer:
                             final_content["text"] = sanitize_with_links(web_answer)
                             return final_content
                         if notification:
                             final_content["text"] = sanitize_with_links(notification)
+                            if "✅" in notification:
+                                user_notifications = await notifications_repository.get_active_notifications_by_user_id(user_id=user_id)
+                                final_content["reply_markup"] = delete_notification_keyboard(user_notifications[-1].id)
                             return final_content
                         elif len(result_images) != 0:
-                            await subscriptions_repository.use_generation(subscription_id=user_sub.id)
+                            await subscriptions_repository.use_generation(subscription_id=user_sub.id, count=len(result_images))
                             final_content["text"] = sanitize_with_links(first_msg.content[0]
                                                                         .text
                                                                         .value if hasattr(first_msg.content[0],
@@ -454,7 +408,8 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                             return final_content
                     except Exception:
                         print(traceback.format_exc())
-                        await delete_message.delete()
+                        if delete_message:
+                            await delete_message.delete()
                         from bot import logger
                         logger.log(
                             "GPT_ERROR",
@@ -504,7 +459,7 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                     "GPT_ERROR",
                     f"ЗАКОНЧИЛИСЬ БАБКИ или другая ошибка gpt: {run.json()}"
                 )
-                final_content["text"] = ("Произошла непредвиденная ошибка, попробуй еще раз! Cейчас наблюдаются сбои в системе")
+                final_content["text"] = ("Произошла непредвиденная ошибка, попробуй еще раз!")
                 return final_content
             except NoSubscription:  # 1. пропускаем тарифные ошибки
                 raise
@@ -719,7 +674,7 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
         self.assistant = None
 
 
-async def dispatch_tool_call(tool_call, image_client, user_id: int) -> Any:
+async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_generations: int | None = None) -> Any:
     """
     Принимает как Pydantic‑объект RequiredActionFunctionToolCall,
     так и старый словарь (для обратной совместимости).
@@ -740,9 +695,9 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int) -> Any:
         try:
             args = json.loads(args_raw)
         except json.JSONDecodeError:
-            print("\n\n")
+            # print("\n\n")
             # print(args_raw)
-            print("\n\n")
+            # print("\n\n")
             # например, обрезать до первого `}` и допarse
             first_obj = args_raw.split('}', 1)[0] + '}'
             args = json.loads(first_obj)
@@ -757,15 +712,33 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int) -> Any:
             await schedule_notification(user_id=user.user_id,
                                         when_send_str=when_send_str,
                                         text_notification=text_notification)
-            return f"Отлично, добавили уведомление на {when_send_str} по московскому времени\n\nТекст уведомления: {text_notification}"
-        except NotificationLimitError as e:
-            # print(traceback.format_exc())
+            return f"✅ Отлично! Уведомление установлено на {when_send_str} по московскому времени\n\n📝 Текст напоминания: {text_notification}"
+        except NotificationLimitError:
             active_notifications = await notifications_repository.get_active_notifications_by_user_id(user_id)
-            return (f"Превышен лимит уведомлений. У вас уже есть {len(active_notifications)} активных уведомлений. "
-                    f"Максимальное количество: 10. Дождитесь срабатывания существующих уведомлений ")
-        except NotificationSchedulerError:
+            return (f"❌ Превышен лимит уведомлений. У вас уже есть {len(active_notifications)} активных уведомлений. "
+                    f"Максимальное количество: 10. Дождитесь срабатывания существующих уведомлений.")
+        except NotificationFormatError:
+            return ("❌ Неверный формат даты или времени. "
+                    "Используйте формат: ГГГГ-ММ-ДД ЧЧ:ММ:СС, например: '2024-12-25 15:30:00'")
+        except NotificationDateTooFarError:
+            return ("❌ Дата слишком далекая. "
+                    "Можно устанавливать уведомления максимум до 2030 года.")
+        except NotificationDateInPastError:
+            return ("❌ Указанный год уже прошел. "
+                    "Укажите дату в будущем.")
+        except NotificationPastTimeError:
+            return ("❌ Указанное время уже прошло. "
+                    "Укажите время в будущем. Сейчас московское время.")
+        except NotificationTextTooShortError:
+            return ("❌ Текст уведомления слишком короткий. "
+                    "Напишите хотя бы 3 символа, чтобы напоминание было понятным.")
+        except NotificationTextTooLongError:
+            return ("❌ Текст уведомления слишком длинный. "
+                    "Максимум 500 символов. Сократите текст.")
+        except Exception as e:
             print(traceback.format_exc())
-            return "Нельзя запланировать уведомление на прошлое время или неверный формат даты/времени"
+            return ("❌ Произошла неожиданная ошибка при создании уведомления. "
+                    "Попробуйте еще раз или обратитесь в поддержку.")
     if name == "search_web":
         # print("\n\nsearch_web\n\n")
         query = args.get("query") or ""
@@ -778,9 +751,12 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int) -> Any:
             main_bot = get_current_bot()
             # print(photo_id)
             photo_bytes_io = io.BytesIO()
-            await main_bot.download(photo_id, destination=photo_bytes_io)
-            photo_bytes_io.seek(0)
-            photo_bytes.append(photo_bytes_io.read())
+            try:
+                await main_bot.download(photo_id, destination=photo_bytes_io)
+                photo_bytes_io.seek(0)
+                photo_bytes.append(photo_bytes_io.read())
+            except:
+                pass
     # --- 3. Диспатчинг ---
     if name == "generate_image":
         # print("generate_image")
@@ -788,16 +764,49 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int) -> Any:
         try:
             kwargs: dict[str, Any] = {
                 "prompt": args["prompt"],
-                "n": args.get("n", 1),
+                "n": args.get("n", 1) if max_photo_generations and max_photo_generations > args.get("n", 1) else max_photo_generations,
                 "size": args.get("size", DEFAULT_IMAGE_SIZE),
                 "quality": args.get("quality", "low"),
             }
+            # print(kwargs)
             # print("\n\n\nИзменять?", args.get("edit_existing_photo"))
             if args.get("edit_existing_photo"):
                 kwargs["images"] = [("image.png", io.BytesIO(photo), "image/png") for photo in photo_bytes]
             return await image_client.generate(**kwargs)
         except:
             return []
+    if name == "fitting_clothes":
+        fitroom_client = FitroomClient()
+        cloth_type = (args.get("cloth_type") or "full").strip()
+        swap_photos = args.get("swap_photos") or False
+        # print(args.get("swap_photos"))
+        if len(photo_bytes)!= 2:
+            return "Дорогой друг, пришли фото человека и фото одежды для примерки одним сообщением! Ровно две фотографии!"
+        if swap_photos:
+            model_bytes = photo_bytes[1]
+            cloth_bytes = photo_bytes[0]
+        else:
+            model_bytes = photo_bytes[0]
+            cloth_bytes = photo_bytes[1]
+        try:
+            main_bot = get_current_bot()
+            result_bytes = await fitroom_client.try_on(
+                model_bytes=model_bytes,
+                cloth_bytes=cloth_bytes,
+                cloth_type=cloth_type,
+                send_bot=main_bot,
+                chat_id=user_id,
+                validate=False
+            )
+            return [result_bytes]
+        except Exception:
+            print(traceback.format_exc())
+            return []
+        finally:
+            try:
+                await fitroom_client.close()
+            except:
+                pass
 
     if name == "edit_image_only_with_peoples":
         # print("edit_image_only_with_peoples")
@@ -814,7 +823,7 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int) -> Any:
             return [await generate_image_bytes(prompt=args.get("prompt"), ratio=args.get("ratio"),
                                                images=photo_bytes if len(photo_bytes) <= 3 else photo_bytes[:3])]
         except RuntimeError as e:
-            print(f"Runway task failed for prompt «{prompt}»: {e}")
+            # print(f"Runway task failed for prompt «{prompt}»: {e}")
             return []
         except Exception as e:
             from bot import logger
@@ -832,26 +841,43 @@ async def process_assistant_run(
     run,
     thread_id: str,
     user_id: int,
+    max_photo_generations: int,
     image_client: Optional[AsyncOpenAIImageClient] = None,
 ):
     """Выполняет все tool‑calls ассистента и передаёт результаты."""
     if run.status != "requires_action" or run.required_action.type != "submit_tool_outputs":
-        return
+        return {"final_images": [], "web_answer": None, "notif_answer": None}
     image_client = image_client or AsyncOpenAIImageClient()
     outputs = []
     final_images = []
     web_answer = None
     text_answer = None
+    images_counter = 0
     for tc in run.required_action.submit_tool_outputs.tool_calls:
-        if tc.function.name == "search_web" or tc.function.name == "add_notification":
-            text_answer = await dispatch_tool_call(tc, image_client, user_id=user_id)
-            outputs.append({"tool_call_id": tc.id, "output": json.dumps({"text": web_answer})})
+        # print(tc.function.name)
+        if tc.function.name == "search_web":
+            web_answer = await dispatch_tool_call(tc, image_client, user_id=user_id)
+            outputs.append({"tool_call_id": tc.id, "output": "Ответ от агента, который умеет"
+                                                             " находить информацию в интернете" + json.dumps({"text": web_answer})})
             continue
-        images = (await dispatch_tool_call(tc, image_client, user_id=user_id))
-        final_images.extend(images)
+        if tc.function.name == "add_notification":
+            text_answer = await dispatch_tool_call(tc, image_client, user_id=user_id)
+            outputs.append({"tool_call_id": tc.id, "output": "Добавили информацию о напоминании: " + json.dumps({"text": text_answer})})
+            continue
+        if images_counter >= max_photo_generations:
+            outputs.append({"tool_call_id": tc.id, "output": "Одно не было сгенерировано, так как был исчерпан лимит"})
+            continue
+
+        images = (await dispatch_tool_call(tc, image_client, user_id=user_id,
+                                           max_photo_generations=max_photo_generations))
+        if tc.function.name == "fitting_clothes" and isinstance(images, str):
+            outputs.append({"tool_call_id": tc.id, "output": json.dumps({"text": images})})
+            continue
         if images is None:
             outputs.append({"tool_call_id": tc.id, "output": "ignored"})
             continue
+        images_counter += len(images if images is not None and isinstance(images, list) else 0)
+        final_images.extend(images)
         # сохраняем изображения как файлы
         file_ids = []
         # if images[1] == "openai":
@@ -860,7 +886,7 @@ async def process_assistant_run(
             file_ids.append(file.id)
         outputs.append({
             "tool_call_id": tc.id,
-            "output": json.dumps({"file_ids": file_ids})
+            "output": "ID фотографий, которые были сгенерированы в конечном итоге" + json.dumps({"file_ids": file_ids})
         })
     # print(final_images)
     await client.beta.threads.runs.submit_tool_outputs(thread_id=thread_id, run_id=run.id, tool_outputs=outputs)

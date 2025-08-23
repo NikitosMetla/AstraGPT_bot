@@ -34,7 +34,7 @@ async def telegram_admin_sink(message):
         record = message.record
         time = record["time"].strftime("%d-%b-%Y %H:%M:%S")
         level = record["level"].name
-        text = f"<b>{time}</b>\n<b>Level:</b> {level}\n{record['message']}"
+        text = f"️<b>TEST BOT</b>\n\n<b>{time}</b>\n<b>Level:</b> {level}\n{record['message']}"
         admins = await admin_repository.select_all_admins()
         for admin in admins:
             try:
@@ -75,23 +75,23 @@ async def main():
     # … другие уровни …
 
     # Синк для START_BOT
-    # logger.add(
-    #     loguru_sink_wrapper,
-    #     level="START_BOT",
-    #     filter=lambda rec: rec["level"].name == "START_BOT",
-    #     enqueue=True,
-    # )
+    logger.add(
+        loguru_sink_wrapper,
+        level="START_BOT",
+        filter=lambda rec: rec["level"].name == "START_BOT",
+        enqueue=True,
+    )
     # Синк для ERROR_HANDLER, GPT_ERROR, STOPPED и т.д.
-    # for lvl in ("ERROR_HANDLER", "GPT_ERROR"):
-    #     logger.add(
-    #         loguru_sink_wrapper,
-    #         level=lvl,
-    #         filter=lambda rec, L=lvl: rec["level"].name == L,
-    #         enqueue=True,
-    #     )
+    for lvl in ("ERROR_HANDLER", "GPT_ERROR"):
+        logger.add(
+            loguru_sink_wrapper,
+            level=lvl,
+            filter=lambda rec, L=lvl: rec["level"].name == L,
+            enqueue=True,
+        )
 
     # Лог о старте
-    logger.log("START_BOT", "🚀 Bot was STARTED")
+    logger.log("START_BOT", "🚀 ️TEST Bot was STARTED")
 
     # Инициализация БД, диспетчера и т. д.
     db_engine = DatabaseEngine()
@@ -126,7 +126,7 @@ async def main():
         await dp.start_polling(test_bot, polling_timeout=3, skip_updates=False)
     finally:
     # Лог о завершении и уведомление админам
-        logger.log("STOPPED", "‼️ Bot has STOPPED")
+        logger.log("STOPPED", "‼️TEST Bot has STOPPED")
 
         # 2. Дополнительно вручную роняем рассылку «STOPPED» по админам,
         #    чтобы не зависеть от очередей Loguru
@@ -136,7 +136,7 @@ async def main():
         text = (
             f"<b>{time_str}</b>\n"
             f"<b>Level:</b> STOPPED\n"
-            "‼️ Bot has STOPPED"
+            "‼️ TEST Bot has STOPPED"
         )
         admins = await admin_repository.select_all_admins()
         # for admin in admins:

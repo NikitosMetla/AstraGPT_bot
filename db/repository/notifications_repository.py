@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Sequence, Optional
 
-from sqlalchemy import select, or_, update, and_
+from sqlalchemy import select, or_, update, and_, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.engine import DatabaseEngine
@@ -70,7 +70,7 @@ class NotificationsRepository:
             async with session.begin():
                 sql = select(Notifications).where(
                     and_(Notifications.user_id == user_id, Notifications.active == True)
-                )
+                ).order_by(Notifications.id)
                 query = await session.execute(sql)
                 return query.scalars().all()
 
@@ -83,5 +83,14 @@ class NotificationsRepository:
                 }).where(or_(Notifications.id == notification_id))
                 await session.execute(sql)
                 await session.commit()
+
+    async def delete_active_by_notification_id(self, notification_id: int):
+        async with self.session_maker() as session:
+            session: AsyncSession
+            async with session.begin():
+                sql = delete(Notifications).where(or_(Notifications.id == notification_id))
+                await session.execute(sql)
+                await session.commit()
+
 
 

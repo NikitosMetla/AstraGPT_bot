@@ -128,12 +128,12 @@ class SubscriptionsRepository:
                 await session.execute(sql)
                 await session.commit()
 
-    async def use_generation(self, subscription_id: int):
+    async def use_generation(self, subscription_id: int, count: int):
         async with self.session_maker() as session:
             session: AsyncSession
             async with session.begin():
                 sql = update(Subscriptions).values({
-                    Subscriptions.photo_generations: Subscriptions.photo_generations - 1
+                    Subscriptions.photo_generations: Subscriptions.photo_generations - count
                 }).where(or_(Subscriptions.id == subscription_id))
                 await session.execute(sql)
                 await session.commit()

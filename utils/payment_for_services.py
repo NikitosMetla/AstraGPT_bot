@@ -14,7 +14,7 @@ async def create_payment(email: str,
                          amount: str,
                          currency: str = "RUB",
                          description: str = "Оплата подписки на ai ассистента по ментальному состоянию",
-                         return_url: str = "https://t.me/reunway_test34563456_bot"):
+                         return_url: str = "https://t.me/astra_gptbot"):
     try:
         payment = Payment.create({
             "amount": {

@@ -17,6 +17,8 @@ def is_subscriber(func):
         try:
             user_sub = await subscriptions_repository.get_active_subscription_by_user_id(message.from_user.id)
             type_sub = await type_subscriptions_repository.get_type_subscription_by_id(type_id=user_sub.type_subscription_id)
+            print(type_sub.plan_name)
+            print(user_sub)
             if user_sub and type_sub.plan_name != "Free":
                 # print('Проверка на подписку пройдена')
                 return await func(message, state, bot, **kwargs)

@@ -35,6 +35,14 @@ class TypeSubscriptionsRepository:
                 query = await session.execute(sql)
                 return query.scalars().one_or_none()
 
+    async def get_type_subscription_by_plan_name(self, plan_name: str) -> TypeSubscriptions:
+        async with self.session_maker() as session:
+            session: AsyncSession
+            async with session.begin():
+                sql = select(TypeSubscriptions).where(or_(TypeSubscriptions.plan_name == plan_name))
+                query = await session.execute(sql)
+                return query.scalars().one_or_none()
+
     async def select_all_type_subscriptions(self) -> Sequence[TypeSubscriptions]:
         async with self.session_maker() as session:
             session: AsyncSession

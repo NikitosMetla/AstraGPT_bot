@@ -46,7 +46,7 @@ async def get_day_statistic(call: types.CallbackQuery, state: FSMContext, bot: B
         await state.set_state(InputMessage.enter_email)
         await state.update_data(max_generations=max_generations,
                                 price=price, sub_type_id=sub_type_id)
-        await call.message.answer("Для проведения оплаты нам понадобиться адрес электронной почты,"
+        await call.message.answer("Для проведения оплаты нам понадобится адрес электронной почты,"
                                   " чтобы направить чек о покупке 🧾\n\nПожалуйста, введи свой email 🍏")
         try:
             await call.message.delete()
@@ -75,9 +75,9 @@ async def enter_user_email(message: types.Message, state: FSMContext, bot: Bot):
         max_generations = data['max_generations']
         type_sub_id = data.get("sub_type_id")
         await state.clear()
-        await message.answer("Отлично, мы сохранили твой email для следующих покупок")
         await asyncio.sleep(1)
         await users_repository.update_email_by_user_id(user_id=message.from_user.id, email=message.text)
+        delete_message = await message.answer("Отлично, мы сохранили твой email для следующих покупок")
         user = await users_repository.get_user_by_user_id(message.from_user.id)
         payment = await create_payment(user.email, amount=price)
         await operation_repository.add_operation(operation_id=payment[0], user_id=message.from_user.id, is_paid=False,
@@ -93,6 +93,12 @@ async def enter_user_email(message: types.Message, state: FSMContext, bot: Bot):
             await bot.delete_message(chat_id=message.from_user.id, message_id=del_message_id)
         except:
             return
+        finally:
+            await asyncio.sleep(2)
+            try:
+                await delete_message.delete()
+            except:
+                pass
     else:
         try:
             data = await state.update_data()
@@ -142,7 +148,7 @@ async def check_payment_callback(message: types.CallbackQuery, state: FSMContext
             payment = await operation_repository.get_operation_by_operation_id(payment_id)
             keyboard = await keyboard_for_pay(operation_id=operation_id, url=payment.url, time_limit=30,
                                               type_sub_id=sub_type_id)
-            await message.message.edit_text("Пока мы не видим, чтобы оплата была произведена( Погоди"
+            await message.message.edit_text("Пока мы не видим, чтобы оплата была произведена( Подожди"
                                             " еще немного времени и убедись,"
                                             " что ты действительно произвел оплату. Если что-то пошло не так, свяжись"
                                             " с нами с помощью команды /support",

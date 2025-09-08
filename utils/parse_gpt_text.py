@@ -34,6 +34,11 @@ def _convert_md_to_html_code(text: str) -> str:
 
     return pattern.sub(replacer, text)
 
+
+# Нормализация &gt; → >
+_GT_ENTITY_RE = re.compile(r"&(?:amp;)?gt;")
+
+
 # ---------------------------------------------------------------------
 def sanitize_html(text: str) -> str:
     """
@@ -68,8 +73,14 @@ def sanitize_html(text: str) -> str:
     cleaned_tail = _MD_SYNTAX_OUTSIDE.sub("", escaped_tail)  # Удаляем Markdown-символы
     parts.append(cleaned_tail)
     # Собираем всё вместе
+    # Собираем всё вместе
     result = "".join(parts).strip()
+
+    # <<< ВОТ ДОБАВЛЯЕМ: разворачиваем &gt; обратно в ">"
+    result = _GT_ENTITY_RE.sub(">", result)
+
     return re.sub(r"【[^】]+】", "", result)
+
 
 # ---------------------------------------------------------------------
 # utils/parse_gpt_text.py

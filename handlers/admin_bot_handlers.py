@@ -11,8 +11,9 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from data.keyboards import admin_keyboard, add_delete_admin, cancel_keyboard, back_to_bots_keyboard, \
     db_tables_keyboard, type_users_mailing_keyboard, statistics_keyboard, confirm_send_mailing
 from db.repository import admin_repository, users_repository, ai_requests_repository, subscriptions_repository, \
-    referral_system_repository, events_repository
+    referral_system_repository, events_repository, type_subscriptions_repository
 from settings import InputMessage, business_connection_id, get_current_bot
+from test_bot import test_bot
 from utils.generate_promo import generate_single_promo_code
 from utils.get_table_db_to_excel import export_table_to_memory
 from utils.is_main_admin import is_main_admin
@@ -185,35 +186,42 @@ async def confirm_mailing_message(call: types.CallbackQuery, state: FSMContext, 
     call_data = call.data.split("|")
     is_confirm = True if call_data[1] == "yes" else False
     message = call.message
-    split_text = message.caption.split("|||")
-    photo_bytes_io = io.BytesIO()
-    await bot.download(message.photo[-1], destination=photo_bytes_io)
+    split_text = message.caption.split("|||") if message.caption else message.text.split("|||")
+    photo_bytes_io = None
+    if message.photo:
+        photo_bytes_io = io.BytesIO()
+        await bot.download(message.photo[-1], destination=photo_bytes_io)
     if len(split_text) > 1:
         with_usernames = True
     else:
         with_usernames = False
     users = await users_repository.select_all_users()
     main_bot = get_current_bot()
+    if main_bot is None:
+        main_bot = test_bot
     if is_confirm:
         await message.answer(text="Начали рассылку по пользователями с твоим отправленным фото")
         await call.message.delete()
         sending_messages = 0
         send_messages = {}
         for user in users:
-            caption = message.caption
-            if user.user_id == 774127719:
-                    # print("send")
-                try:
-                    if with_usernames:
-                        caption = f"Дорогой {'@' + user.username if user.username else 'друг'}!\n" + '\n'.join(split_text[1:])
+            caption = message.caption or message.text
+            # if user.user_id == 774127719:
+            #         print("send")
+            try:
+                if with_usernames:
+                    caption = f"Дорогой {'@' + user.username if user.username else 'друг'}!\n" + '\n'.join(split_text[1:])
+                if photo_bytes_io:
                     send_message = await main_bot.send_photo(chat_id=user.user_id, caption=caption,
                                               photo=BufferedInputFile(file=photo_bytes_io.getvalue(),
                                                                       filename="mailing_photo.jpg"))
-                    send_messages[user.user_id] = send_message.message_id
-                    sending_messages += 1
-                except Exception as e:
-                    print(e)
-                    continue
+                else:
+                    send_message = await main_bot.send_message(chat_id=user.user_id, text=caption)
+                send_messages[user.user_id] = send_message.message_id
+                sending_messages += 1
+            except Exception as e:
+                print(traceback.format_exc())
+                continue
         await message.answer(text=f"Рассылка завершена. {sending_messages} из {len(users)} человек получили рассылку")
         print(send_messages)
     else:
@@ -227,23 +235,18 @@ async def enter_message_mailing(message: types.Message, state: FSMContext, bot: 
     state_data = await state.get_data()
     type_users = state_data.get("type_users")
     message_id = state_data.get("message_id")
-    photo = message.photo[-1].file_id
-    photo_bytes_io = io.BytesIO()
-    await bot.download(message.photo[-1], destination=photo_bytes_io)
-    print(type_users)
     user = await users_repository.get_user_by_user_id(user_id=message.from_user.id)
     if type_users == "all":
         try:
             # return
-            text = message.text
-            if "with usernames" in text:
-                text = f"Дорогой {'@' + user.username if user.username else 'друг'}!|||\n\n" + '\n'.join(
+            caption = message.text
+            if "with usernames" in caption:
+                caption = f"Дорогой {'@' + user.username if user.username else 'друг'}!|||\n\n" + '\n'.join(
                     split_text[1:])
-            mailing_message = await message.answer(text=text,
-                                                   reply_markup=confirm_send_mailing().as_markup())
+            mailing_message = await message.answer(text=caption, reply_markup=confirm_send_mailing().as_markup())
             # await message.answer("Подтвердить рассылку сообщения выше?", ))
         except Exception as e:
-            print(e)
+            print(traceback.format_exc())
     await bot.delete_message(message_id=message_id, chat_id=message.from_user.id)
     await state.clear()
 
@@ -319,14 +322,15 @@ async def get_statistics(message: types.Message, state: FSMContext, bot: Bot):
 
 @admin_router.message(F.text, InputMessage.enter_promo_days)
 @is_main_admin
-async def get_statistics(message: types.Message, state: FSMContext, bot: Bot):
+async def route_enter_promo_days(message: types.Message, state: FSMContext, bot: Bot):
     max_days = message.text
     if max_days.isdigit():
         await state.clear()
-        await message.answer("Отлично, теперь введи максимальное количество активаций данного промокода",
-                             reply_markup=cancel_keyboard.as_markup())
         await state.set_state(InputMessage.enter_max_activations_promo)
         await state.update_data(max_days=max_days)
+        await message.answer("Отлично, теперь введи максимальное количество активаций данного промокода",
+                             reply_markup=cancel_keyboard.as_markup())
+
         return
     await message.answer("Ты ввел не число, попробуй еще раз ввести количество дней,"
                          " которое будет давать активация данного промокода",
@@ -335,20 +339,55 @@ async def get_statistics(message: types.Message, state: FSMContext, bot: Bot):
 
 @admin_router.message(F.text, InputMessage.enter_max_activations_promo)
 @is_main_admin
-async def get_statistics(message: types.Message, state: FSMContext, bot: Bot):
+async def route_enter_max_activations_promo(message: types.Message, state: FSMContext, bot: Bot):
     max_activations = message.text
     state_data = await state.get_data()
     max_days = int(state_data.get("max_days"))
     if max_activations.isdigit():
         max_activations = int(max_activations)
         await state.clear()
+        await state.set_state(InputMessage.enter_max_generations_photos)
+        await state.update_data(max_days=max_days, max_activations=max_activations)
+        await message.answer("Теперь введи количество генераций изображений, которые"
+                             " будут доступны по данному промокоду")
+
+        return
+        # promo_code = await generate_single_promo_code()
+        # # await referral_system_repository.add_promo(promo_code=promo_code,
+        # #                                            max_days=max_days,
+        # #                                            max_activations=max_activations,
+        # #                                            type_promo="from_admin")
+        # await message.answer(f"Отлично, ты выпустил промокод!\n\nПромокод: <code>{promo_code}</code>")
+    await message.answer("Ты ввел не число, попробуй еще раз ввести"
+                         " максимальное количество активаций данного промокода",
+                         reply_markup=cancel_keyboard.as_markup())
+
+
+@admin_router.message(F.text, InputMessage.enter_max_generations_photos)
+@is_main_admin
+async def route_enter_max_generations_photos(message: types.Message, state: FSMContext, bot: Bot):
+    state_data = await state.get_data()
+    max_days = int(state_data.get("max_days"))
+    max_activations = int(state_data.get("max_activations"))
+    max_generations_photos = message.text
+    if max_generations_photos.isdigit():
+        max_generations_photos = int(max_generations_photos)
         promo_code = await generate_single_promo_code()
         await referral_system_repository.add_promo(promo_code=promo_code,
                                                    max_days=max_days,
                                                    max_activations=max_activations,
-                                                   type_promo="from_admin")
+                                                   type_promo="from_admin",
+                                                   max_generations=max_generations_photos)
+        await type_subscriptions_repository.add_type_subscription(with_files=True,
+                                                                  web_search=True,
+                                                                  with_voice=True,
+                                                                  plan_name=f"promo_{promo_code}",
+                                                                  price=0,
+                                                                  max_generations=max_generations_photos)
         await message.answer(f"Отлично, ты выпустил промокод!\n\nПромокод: <code>{promo_code}</code>")
         return
-    await message.answer("Ты ввел не число, попробуй еще раз ввести"
-                         " максимальное количество активаций данного промокода",
-                         reply_markup=cancel_keyboard.as_markup())
+    else:
+        await message.answer("Ты ввел не число, попробуй еще раз ввести"
+                             " максимальное количество генераций фотографий данного промокода",
+                             reply_markup=cancel_keyboard.as_markup())
+

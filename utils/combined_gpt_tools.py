@@ -5,6 +5,7 @@ import base64
 import io
 import json
 import os
+import pprint
 import traceback
 from collections import defaultdict
 from typing import Any, Awaitable, Callable, Optional, Sequence
@@ -88,6 +89,7 @@ async def get_thread_lock(thread_id: str) -> asyncio.Lock:
 load_dotenv(find_dotenv())
 OPENAI_API_KEY: str | None = os.getenv("GPT_TOKEN") or os.getenv("OPENAI_API_KEY")
 assistant_id = os.getenv("ASSISTANT_ID")
+reasoning_assistant_id = os.getenv("REASONING_ASSISTANT_ID")
 DEFAULT_IMAGE_MODEL = "gpt-image-1"
 DEFAULT_IMAGE_SIZE = "1024x1024"
 
@@ -146,24 +148,34 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
 
     def __init__(self, assistant_id: str | None = assistant_id):
         """Инициализирует GPT-ассистента с необязательным *thread_id*."""
-        self.assistant_id = assistant_id
+        # self.assistant_id = assistant_id
         self.client = AsyncOpenAI(api_key=api_key)
         self.assistant = None
         # thread_id будет передаваться в методе send_message для каждого запроса
         self.vector_store_id: str | None = None
 
     async def _safe_create_run(self, *, thread_id: str, assistant_id: str,
-                               instructions: str, model: str,
-                               timeout: float, max_retry: int = 3):
+                               instructions: str,
+                               timeout: float, max_retry: int = 3,
+                               model: str | None = None,
+                               ):
         for attempt in range(max_retry):
             try:
-                return await self.client.beta.threads.runs.create_and_poll(
-                    thread_id=thread_id,
-                    assistant_id=assistant_id,
-                    instructions=instructions,
-                    model=model,
-                    timeout=timeout,
-                )
+                if model:
+                    return await self.client.beta.threads.runs.create_and_poll(
+                        thread_id=thread_id,
+                        assistant_id=assistant_id,
+                        instructions=instructions,
+                        model=model,
+                        timeout=timeout,
+                    )
+                else:
+                    return await self.client.beta.threads.runs.create_and_poll(
+                        thread_id=thread_id,
+                        assistant_id=assistant_id,
+                        instructions=instructions,
+                        timeout=timeout,
+                    )
             except BadRequestError as e:
                 # если уже есть активный run — дождаться его завершения и повторить
                 if "already has an active run" in str(e) and attempt < max_retry - 1:
@@ -172,10 +184,16 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                 # во всех остальных случаях пробросить ошибку дальше
                 raise
 
-    async def _ensure_assistant(self):
+    async def _ensure_assistant(self, user_type_model: str | None = "universal"):
         """Ленивая загрузка объекта ассистента."""
+        # if user_type_model == "universal":
+        #     return await self.client.beta.assistants.retrieve(assistant_id=reasoning_assistant_id)
+        # else:
+        #     return await self.client.beta.assistants.retrieve(assistant_id=assistant_id)
         if self.assistant is None:
-            self.assistant = await self.client.beta.assistants.retrieve(assistant_id=self.assistant_id)
+            self.assistant = await self.client.beta.assistants.retrieve(assistant_id=assistant_id)
+        return self.assistant
+
 
     async def _ensure_thread(self, *, user_id: int, thread_id: str | None = None):
         """Гарантирует существование объекта thread: возвращает переданный или создаёт новый."""
@@ -267,7 +285,10 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
         from settings import get_weekday_russian
         """Отправляет пользовательский запрос с опциональными вложениями."""
         # При каждом запросе обновляем текущий thread, если он передан явно
-        await self._ensure_assistant()
+        if user_data is not None:
+            assistant = await self._ensure_assistant(user_type_model=user_data.type_model)
+        else:
+            assistant = await self._ensure_assistant()
         if thread_id is None:
             thread = await self._ensure_thread(user_id=user_id, thread_id=thread_id)
             thread_id = thread.id
@@ -306,7 +327,7 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                 # 4. запускаем новый run и ждём результата
                 run = await self._safe_create_run(
                     thread_id=thread_id,
-                    assistant_id=self.assistant.id,
+                    assistant_id=assistant.id,
                     instructions=f"ВАЖНАЯ ИНФОРМАЦИЯ О ВРЕМЕНИ:\n"
                                 f"Текущие дата и время в Москве: {get_current_datetime_string()}\n"
                                 f"Сегодня {get_weekday_russian()}\n"
@@ -316,31 +337,75 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                                 f"- 'послезавтра' = через два дня\n"  
                                 f"- 'на следующей неделе в понедельник' = ближайший понедельник после текущей недели\n"
                                 f"- 'через 30 минут' = добавить 30 минут к текущему времени\n\n"
-                                f"Основные инструкции:\n{self.assistant.instructions}" +
+                                f"Основные инструкции:\n{assistant.instructions}" +
                                 (f"\n\nИнформация о пользователе:\n{about_user}" if about_user else ""),
-                    model=user.model_type,
+                    # model=user.model_type,
                     timeout=15.0,
                 )
                 run_id = run.id
+                # --- NEW: расширенная обработка статусов Run ---
+                import asyncio, random, time
+                start = time.monotonic()
+                backoff = 0.6
+                max_backoff = 4.0
+                hard_timeout_sec = 40.0  # сторожевой таймер на «зависания» queued/in_progress
+
+                # 1) Дожидаемся выхода из очереди/прогресса/отмены
+                while run.status in ("queued", "in_progress", "cancelling"):
+                    if time.monotonic() - start > hard_timeout_sec:
+                        try:
+                            await self.client.beta.threads.runs.cancel(thread_id=thread_id, run_id=run_id)
+                        except Exception:
+                            pass
+                        logger.log("GPT_ERROR", f"Run timed out and was cancelled: thread={thread_id}, run={run_id}")
+                        final_content["text"] = "Сервис временно перегружен. Попробуйте ещё раз немного позже."
+                        return final_content
+                    await asyncio.sleep(backoff)
+                    backoff = min(max_backoff, backoff * (1.6 + random.random() * 0.3))
+                    # опрос актуального статуса
+                    run = await self.client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run_id)
+
+                # 2) Терминальные неуспешные статусы: отдаём пользователю понятное объяснение
+                if run.status in ("failed", "incomplete", "cancelled", "expired"):
+                    last_error = getattr(run, "last_error", None)
+                    err_code = getattr(last_error, "code", None) if last_error else None
+                    # частые коды: insufficient_quota, rate_limit_exceeded, server_error
+                    if err_code in ("insufficient_quota",):
+                        final_content["text"] = "⛔ Превышен лимит API (insufficient_quota). Проверьте биллинг/месячный бюджет."
+                        return final_content
+                    if err_code in ("rate_limit_exceeded",):
+                        final_content["text"] = "Слишком много запросов за короткое время. Повторите попытку позже."
+                        return final_content
+                    # общее сообщение для прочих кейсов (включая incomplete/expired)
+                    final_content["text"] = f"Запрос не выполнен (status={run.status}). Попробуйте сократить контекст или повторить позже."
+                    return final_content
+
+                # 3) Статус requires_action и completed будут обработаны вашей текущей логикой ниже
+                # -------------------------------------------------------------------------------
+
                 # print("Сегодня - ", get_current_datetime_string())
                 # ---------------- NEW: обработка image‑tools ----------------
                 if run.status == "requires_action":
                     from settings import sub_text
+
+
                     user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user.user_id)
-                    if user_sub:
-                        type_sub = await type_subscriptions_repository.get_type_subscription_by_id(type_id=user_sub.type_subscription_id)
-                    else:
-                        type_sub = None
-                    sub_types = await type_subscriptions_repository.select_all_type_subscriptions()
-                    if user_sub is None or (type_sub is not None and type_sub.plan_name == "Free"):
-                        tools_names = [tc.function.name for tc in run.required_action.submit_tool_outputs.tool_calls]
-                        if "edit_image_only_with_peoples" not in tools_names and "generate_image" not in tools_names:
-                            await main_bot.send_message(chat_id=user.user_id,
-                                                        text="🚨К сожалению, данная функция, которую ты"
-                                                    " пытаешься использовать доступна только по подписке\n\n" + sub_text,
-                                                        reply_markup=subscriptions_keyboard(sub_types).as_markup())
-                            raise NoSubscription(f"User {user.user_id} dont has active subscription")
+                    # if user_sub:
+                    #     type_sub = await type_subscriptions_repository.get_type_subscription_by_id(type_id=user_sub.type_subscription_id)
+                    # else:
+                    #     type_sub = None
+                    # sub_types = await type_subscriptions_repository.select_all_type_subscriptions()
+                    # if user_sub is None or (type_sub is not None and type_sub.plan_name == "Free"):
+                    #     tools_names = [tc.function.name for tc in run.required_action.submit_tool_outputs.tool_calls]
+                    #     if "edit_image_only_with_peoples" not in tools_names and "generate_image" not in tools_names:
+                    #         await main_bot.send_message(chat_id=user.user_id,
+                    #                                     text="🚨К сожалению, данная функция, которую ты"
+                    #                                 " пытаешься использовать, доступна только по подписке\n\n" + sub_text,
+                    #                                     reply_markup=subscriptions_keyboard(sub_types).as_markup())
+                    #         raise NoSubscription(f"User {user.user_id} dont has active subscription")
                     delete_message = None
+
+
                     for tc in run.required_action.submit_tool_outputs.tool_calls:
                         if tc.function.name == "search_web":
                             delete_message = await main_bot.send_message(text="🔍Начал поиск в интернете, анализирую страницы...",
@@ -350,27 +415,28 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                                 text="🖌Начал настраивать напоминание, это не займет много времени...",
                                 chat_id=user.user_id)
                         else:
-                            if user_sub.photo_generations <= 0:
-                                generations_packets = await generations_packets_repository.select_all_generations_packets()
-                                from settings import buy_generations_text
-                                if type_sub.plan_name == "Free":
-                                    await main_bot.send_message(chat_id=user.user_id,
-                                                                text="🚨К сожалению, данная функция, которую ты"
-                                                                     " пытаешься использовать доступна только по подписке\n\n" + sub_text,
-                                                                reply_markup=subscriptions_keyboard(
-                                                                    sub_types).as_markup())
-                                    raise NoSubscription(f"User {user.user_id} dont has active subscription")
-                                await main_bot.send_message(chat_id=user_id, text=buy_generations_text,
-                                                            reply_markup=more_generations_keyboard(generations_packets).as_markup())
-                                # await process_assistant_run(message_response.tool_calls, user_id=user.user_id)
-                                raise NoGenerations(f"User {user.user_id} dont has generations")
+                            # if user_sub.photo_generations <= 0:
+                                # generations_packets = await generations_packets_repository.select_all_generations_packets()
+                                # from settings import buy_generations_text
+                                # if type_sub.plan_name == "Free":
+                                #     await main_bot.send_message(chat_id=user.user_id,
+                                #                                 text="🚨К сожалению, данная функция, которую ты"
+                                #                                      " пытаешься использовать, доступна только по подписке\n\n" + sub_text,
+                                #                                 reply_markup=subscriptions_keyboard(
+                                #                                     sub_types).as_markup())
+                                #     raise NoSubscription(f"User {user.user_id} dont has active subscription")
+                                # await main_bot.send_message(chat_id=user_id, text=buy_generations_text,
+                                #                             reply_markup=more_generations_keyboard(generations_packets).as_markup())
+                                # # await process_assistant_run(message_response.tool_calls, user_id=user.user_id)
+                                # raise NoGenerations(f"User {user.user_id} dont has generations")
                             if tc.function.name != "fitting_clothes":
                                 delete_message = await main_bot.send_message(chat_id=user.user_id,
                                                                              text="🎨Начал работу над изображением, немного магии…")
                         break
                     try:
-                        result = await process_assistant_run(self.client, run, thread_id, user_id=user.user_id,
-                                                             max_photo_generations=user_sub.photo_generations)
+                        # result = await process_assistant_run(self.client, run, thread_id, user_id=user.user_id,
+                        #                                      max_photo_generations=user_sub.photo_generations)
+                        result = await process_assistant_run(self.client, run, thread_id, user_id=user.user_id)
                         result_images = result.get("final_images")
                         web_answer: str = result.get("web_answer")
                         notification: str = result.get("notif_answer")
@@ -381,8 +447,11 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                                 # from bot import logger
                                 # logger.error("Не смогли сгенерировать изображение или обработать запрос😔\n\nВозможно,"
                                 #         " ты попросил что-то, что выходит за рамки норм", result)
-                                final_content["text"] = ("Не смогли сгенерировать изображение или обработать запрос😔\n\nВозможно,"
-                                        " ты попросил что-то, что выходит за рамки норм")
+                                final_content["text"] = ("В связи с большим наплывом пользователей"
+                                                         " наши сервера испытывают экстремальные нагрузки."
+                                                         " Скоро генерация изображений станет снова доступна,"
+                                                         " а пока можете воспользоваться другим функционалом."
+                                                         " Я умею немало 🤗")
                                 return final_content
                         messages = await self.client.beta.threads.messages.list(thread_id=thread_id)
                         if delete_message:
@@ -398,7 +467,9 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                                 final_content["reply_markup"] = delete_notification_keyboard(user_notifications[-1].id)
                             return final_content
                         elif len(result_images) != 0:
-                            await subscriptions_repository.use_generation(subscription_id=user_sub.id, count=len(result_images))
+
+                            # await subscriptions_repository.use_generation(subscription_id=user_sub.id, count=len(result_images))
+
                             final_content["text"] = sanitize_with_links(first_msg.content[0]
                                                                         .text
                                                                         .value if hasattr(first_msg.content[0],
@@ -671,7 +742,6 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
     async def _reset_client(self):
         """Переинициализирует клиента OpenAI и сбрасывает кеш ассистента."""
         self.client = AsyncOpenAI(api_key=api_key)
-        self.assistant = None
 
 
 async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_generations: int | None = None) -> Any:
@@ -689,6 +759,7 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_ge
 
     # --- 2. Приводим arguments к dict ---
     import json
+    from bot import logger
     if isinstance(args_raw, dict):
         args = args_raw
     else:
@@ -703,6 +774,8 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_ge
             args = json.loads(first_obj)
     user = await users_repository.get_user_by_user_id(user_id=user_id)
     photo_bytes = []
+    print("\n\n" + name + "\n\n")
+    pprint.pprint(args)
     if name == "add_notification":
         # print("\n\nadd_notification\n\n")
         when_send_str, text_notification = args.get("when_send_str"), args.get("text_notification")
@@ -764,16 +837,19 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_ge
         try:
             kwargs: dict[str, Any] = {
                 "prompt": args["prompt"],
-                "n": args.get("n", 1) if max_photo_generations and max_photo_generations > args.get("n", 1) else max_photo_generations,
+                "n": args.get("n", 1) if max_photo_generations and max_photo_generations > args.get("n", 1) else 3,
                 "size": args.get("size", DEFAULT_IMAGE_SIZE),
                 "quality": args.get("quality", "low"),
             }
             # print(kwargs)
             # print("\n\n\nИзменять?", args.get("edit_existing_photo"))
             if args.get("edit_existing_photo"):
+                photo_bytes = photo_bytes or []
                 kwargs["images"] = [("image.png", io.BytesIO(photo), "image/png") for photo in photo_bytes]
             return await image_client.generate(**kwargs)
         except:
+            logger.log("GPT_ERROR",
+                       f"Не смогли сгенерировать изображение или обработать запрос😔n\n {traceback.format_exc()}")
             return []
     if name == "fitting_clothes":
         fitroom_client = FitroomClient()
@@ -800,6 +876,9 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_ge
             )
             return [result_bytes]
         except Exception:
+            logger.log("GPT_ERROR",
+                       f"Не смогли сгенерировать изображение или обработать запрос😔n\n {traceback.format_exc()}")
+
             print(traceback.format_exc())
             return []
         finally:
@@ -827,10 +906,9 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_ge
             return []
         except Exception as e:
             from bot import logger
-            logger.log(
-                "GPT_ERROR",
-                f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}"
-            )
+            logger.log("GPT_ERROR",
+                       f"Не смогли сгенерировать изображение или обработать запрос😔n\n {traceback.format_exc()}")
+
             print_log(message=f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}")
             return []
     return None
@@ -841,7 +919,7 @@ async def process_assistant_run(
     run,
     thread_id: str,
     user_id: int,
-    max_photo_generations: int,
+    max_photo_generations: int | None = 999,
     image_client: Optional[AsyncOpenAIImageClient] = None,
 ):
     """Выполняет все tool‑calls ассистента и передаёт результаты."""
@@ -853,7 +931,18 @@ async def process_assistant_run(
     web_answer = None
     text_answer = None
     images_counter = 0
-    for tc in run.required_action.submit_tool_outputs.tool_calls:
+    # 1) освежить run прямо перед извлечением tool_calls — мог измениться
+    run = await client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
+
+    # 2) аккуратно извлечь массив tool_calls
+    submit = getattr(getattr(run, "required_action", None), "submit_tool_outputs", None)
+    tool_calls = getattr(submit, "tool_calls", None) or []
+
+    # 3) если пусто — корректно выйти (ничего сабмитить не нужно)
+    if not tool_calls:
+        return {"final_images": [], "web_answer": None, "notif_answer": None}
+
+    for tc in tool_calls:
         # print(tc.function.name)
         if tc.function.name == "search_web":
             web_answer = await dispatch_tool_call(tc, image_client, user_id=user_id)

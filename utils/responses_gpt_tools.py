@@ -490,9 +490,11 @@ class GPTResponses:  # API через /v1/responses
             # Передаём результаты инструментов и продолжаем цепочку с previous_response_id
             # СТАЛО
             response = await self._create_response(
-                model=user.model_type,
+                # model=user.model_type,
+                model = "gpt-5-mini",
                 previous_response_id=(first_response.id if response.id == first_response.id else response.id),
                 input=tool_results,
+
                 tools=getattr(self, "_followup_tools", [{"type": "web_search"}]),
             )
 
@@ -519,7 +521,7 @@ class GPTResponses:  # API через /v1/responses
                 await asyncio.sleep(1.5 ** attempt)
             except (AuthenticationError, PermissionDeniedError, BadRequestError):
                 raise
-
+    #
     def _extract_tool_calls(self, resp) -> List[dict]:
         calls: List[dict] = []
         for item in getattr(resp, "output", []) or []:

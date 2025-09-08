@@ -62,7 +62,7 @@ async def send_notif(bot: Bot):
             # Предполагаем, что notif.when_send хранится как московское время (naive datetime)
             # Проверяем, наступило ли время для отправки уведомления
             if moscow_now_naive >= notif.when_send:
-                await bot.send_message(chat_id=notif.user_id, text="<b>Напоминание:</b>\n\n" + notif.text_notification)
+                await bot.send_message(chat_id=notif.user_id, text="<b>🚨Напоминание:</b>\n\n" + notif.text_notification)
                 await notifications_repository.update_active_by_notification_id(notification_id=notif.id)
         except Exception:
             print(traceback.format_exc())

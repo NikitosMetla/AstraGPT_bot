@@ -82,10 +82,10 @@ class CombinedMiddleware(BaseMiddleware):
                     await users_repository.add_user(user_id=user_id, username=event.from_user.username)
                     logger.log("JOIN", f"{user_id} | @{event.from_user.username}")
                     self.log(f"New user registered: user_id={user_id}, username=@{event.from_user.username}")
-                user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user_id)
-                if user_sub is None:
-                    await subscriptions_repository.add_subscription(type_sub_id=2, user_id=user_id,
-                                                                    photo_generations=3, time_limit_subscription=30)
+                # user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user_id)
+                # if user_sub is None:
+                #     await subscriptions_repository.add_subscription(type_sub_id=2, user_id=user_id,
+                #                                                     photo_generations=3, time_limit_subscription=30)
                 # Предыдущее состояние пользователя в хранилище
                 check = self.storage.get(user_id)
 

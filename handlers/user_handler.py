@@ -1,6 +1,7 @@
 import io
 import pprint
 import traceback
+from datetime import datetime, timedelta
 
 from aiogram import Router, F, Bot, types
 from aiogram.fsm.context import FSMContext
@@ -14,7 +15,7 @@ from data.keyboards import profiles_keyboard, cancel_keyboard, settings_keyboard
     confirm_clear_context, buy_sub_keyboard, subscriptions_keyboard, delete_payment_keyboard, unlink_card_keyboard, \
     confirm_delete_notification_keyboard, delete_notification_keyboard
 from db.repository import users_repository, ai_requests_repository, subscriptions_repository, \
-    type_subscriptions_repository, notifications_repository
+    type_subscriptions_repository, notifications_repository, referral_system_repository, promo_activations_repository
 from settings import InputMessage, photos_pages, OPENAI_ALLOWED_DOC_EXTS, gpt_assistant, sub_text
 from utils.combined_gpt_tools import NoSubscription, NoGenerations
 from utils.is_subscriber import is_subscriber
@@ -22,6 +23,7 @@ from utils.paginator import MechanicsPaginator
 from utils.parse_gpt_text import split_telegram_html, sanitize_with_links
 
 standard_router = Router()
+
 
 
 async def process_ai_response(ai_response, message: Message, user_id: int, bot: Bot, request_text: str = None, photo_id: str = None, has_photo: bool = False, has_audio: bool = False, has_files: bool = False, file_id: str = None):
@@ -106,6 +108,61 @@ async def process_ai_response(ai_response, message: Message, user_id: int, bot: 
     )
 
 
+@standard_router.message(F.text == "/enter_promocode", any_state)
+async def command_enter_promocode(message: Message | CallbackQuery, state: FSMContext, bot: Bot):
+    await state.set_state(InputMessage.enter_promocode)
+    delete_message = await message.answer("Дорогой друг, введи промокод, который ты хочешь активировать",
+                         reply_markup=cancel_keyboard.as_markup())
+    await state.update_data(delete_message_id=delete_message.message_id)
+
+
+@standard_router.message(F.text, InputMessage.enter_promocode)
+async def route_enter_promocode(message: Message, state: FSMContext, bot: Bot):
+    promo_code = message.text
+    user_id = message.from_user.id
+    state_data = await state.get_data()
+    delete_message_id = state_data.get("delete_message_id")
+    if delete_message_id is not None:
+        try:
+            await bot.delete_message(chat_id=user_id, message_id=delete_message_id)
+        except:
+            pass
+    promo = await referral_system_repository.get_promo_by_promo_code(promo_code=promo_code)
+    if promo is None:
+        await message.answer("Такого промокода не существует",
+                             reply_markup=cancel_keyboard.as_markup())
+        return
+    await state.clear()
+    # delete_message = await message.answer("Секундочку, загружаем информацию о промокоде)")
+    user = await users_repository.get_user_by_user_id(user_id=user_id)
+    promo_activations = await promo_activations_repository.get_user_ids_activations_by_promo_id(promo_id=promo.id)
+    if user_id in promo_activations:
+        await message.answer("К сожалению, мы вынуждены отказать. Ты уже активировал данные бонусы ранее")
+        return
+    await referral_system_repository.update_activations_by_promo_id(promo_id=promo.id)
+    await promo_activations_repository.add_activation(promo_id=promo.id, activate_user_id=user_id)
+    activate_user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user_id)
+    user_sub_type = await type_subscriptions_repository.get_type_subscription_by_id(type_id=activate_user_sub.type_subscription_id)
+    if activate_user_sub is None or (user_sub_type and user_sub_type.plan_name == "Free"):
+        promo_sub_type = await type_subscriptions_repository.get_type_subscription_by_plan_name(plan_name=f"promo_{promo_code}")
+        await subscriptions_repository.add_subscription(user_id=user_id,
+                                                        time_limit_subscription=promo.days_sub,
+                                                        photo_generations=promo.max_generations,
+                                                        type_sub_id=promo_sub_type.id
+                                                        )
+        end_date = datetime.now() + timedelta(days=promo.days_sub)
+        text = f"✅ Теперь у тебя есть <b>подписка</b>! Подписка действует до {end_date.strftime('%d.%m.%y, %H:%M')} (GMT+3)"
+    else:
+        await subscriptions_repository.update_time_limit_subscription(subscription_id=activate_user_sub.id,
+                                                                      new_time_limit=promo.days_sub)
+        await subscriptions_repository.update_generations(subscription_id=activate_user_sub.id,
+                                                          new_generations=promo.max_generations)
+        end_date = activate_user_sub.last_billing_date + timedelta(days=activate_user_sub.time_limit_subscription + promo.days_sub)
+        text = f"✅ К текущему плану тебе добавили <b>{timedelta(days=promo.days_sub).days} дней</b>! Подписка действует до {end_date.strftime('%d.%m.%y, %H:%M')} (GMT+3)"
+    await message.answer(text=text)
+
+
+
 @standard_router.callback_query(F.data.startswith("delete_notification"))
 async def delete_notification_handler(call: CallbackQuery, state: FSMContext, bot: Bot):
     call_data = call.data.split("|")
@@ -138,28 +195,41 @@ async def confirm_delete_notification_handler(call: CallbackQuery, state: FSMCon
 async def sub_message(message: Message | CallbackQuery, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
     user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user_id)
+    if user_sub:
+        type_sub = await type_subscriptions_repository.get_type_subscription_by_id(type_id=user_sub.type_subscription_id)
+    else:
+        type_sub = None
     if type(message) == Message:
-        if user_sub is None:
+        if user_sub is None or (type_sub and type_sub.plan_name == "Free"):
             await message.answer("✨Дорогой друг, на данный момент у тебя нет активной подписки и привязанной карты в частности")
             return
         await message.answer("Ты уверен, что хочешь отвязать карту для оплаты подписки? После этого"
                              " твоя подписка не сможет автоматически продлеваться",
                              reply_markup=unlink_card_keyboard.as_markup())
     else:
-        if user_sub is None:
+        if user_sub is None or (type_sub and type_sub.plan_name == "Free"):
             await message.message.answer("✨Дорогой друг, на данный момент у тебя нет активной подписки и привязанной карты в частности")
             return
         await message.message.delete()
-        await message.message.answer("Ты уверен, что хочешь отвязать карту для оплаты подписки? После этого"
-                             " твоя подписка не сможет автоматически продлеваться",
-                             reply_markup=unlink_card_keyboard.as_markup())
+        if user_sub.method_id:
+            await message.message.answer("Ты уверен, что хочешь отвязать карту для оплаты подписки? После этого"
+                                 " твоя подписка не сможет автоматически продлеваться",
+                                 reply_markup=unlink_card_keyboard.as_markup())
+        else:
+            await message.message.answer("Дорогой друг, у тебя есть активная подписка, но не видим у тебя привязанной"
+                                         " карты. При истечении активной подписки будет необходимо произвести оплату заново")
 
 
 @standard_router.callback_query(F.data == "unlink_card", any_state)
 async def sub_message(call: CallbackQuery, state: FSMContext, bot: Bot):
     user_id = call.from_user.id
     user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user_id)
-    if user_sub is None or user_sub.plan_name == "Free":
+    if user_sub:
+        type_sub = await type_subscriptions_repository.get_type_subscription_by_id(
+            type_id=user_sub.type_subscription_id)
+    else:
+        type_sub = None
+    if user_sub is None or (type_sub and type_sub.plan_name == "Free"):
         await call.message.answer(
             "✨Дорогой друг, на данный момент у тебя нет активной подписки и привязанной карты в частности")
         return
@@ -174,15 +244,17 @@ async def sub_message(call: CallbackQuery, state: FSMContext, bot: Bot):
 
 @standard_router.message(F.text == "/subscribe", any_state)
 async def sub_message(message: Message, state: FSMContext, bot: Bot):
-    user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=message.from_user.id)
-    if user_sub is None:
-        sub_types = await type_subscriptions_repository.select_all_type_subscriptions()
-        await message.answer(sub_text,
-                                  reply_markup=subscriptions_keyboard(sub_types).as_markup())
-    else:
-        await message.answer("Дорогой друг, на данный момент у тебя подключена стандартная подписка."
-                             " Если ты хочешь отвязать карту, то нажми на кнопку ниже",
-                             reply_markup=delete_payment_keyboard.as_markup())
+    await message.answer("✨Дорогой друг, на данный момент бот находится в бета-тесте и у тебя"
+                         " имеется неограниченный доступ ко всему функционалу")
+#     user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=message.from_user.id)
+#     if user_sub is None:
+#         sub_types = await type_subscriptions_repository.select_all_type_subscriptions()
+#         await message.answer(sub_text,
+#                                   reply_markup=subscriptions_keyboard(sub_types).as_markup())
+#     else:
+#         await message.answer("Дорогой друг, на данный момент у тебя подключена стандартная подписка."
+#                              " Если ты хочешь отвязать карту, то нажми на кнопку ниже",
+#                              reply_markup=delete_payment_keyboard.as_markup())
 
 
 # @standard_router.callback_query(F.data == "buy_sub")
@@ -217,15 +289,26 @@ async def send_user_message(message: Message, state: FSMContext, bot: Bot, user_
         await message.answer_photo(photo=photos_pages.get(paginator.page_now),
                                    reply_markup=keyboard)
     except:
-        await message.answer("Привет")
+        await message.answer("Привет! Ты можешь задавать мне разные вопросы и я могу помогать тебе решать разные задачи!")
 
 
 @standard_router.message(F.text == "/profile", any_state)
 async def send_user_message(message: Message, state: FSMContext, bot: Bot):
-    await message.answer('👤 Твой профиль\n\n✓ Подписка: Активна ∞ (без ограничений)\n✓ Доступ: Полный'
-                         ' ко всем функциям\n\n✨ Персонализация\nХочешь идеальные ответы? Расскажи о себе в '
-                         '"Настройке контекста"! Бот учтёт это например при:\n- Составлении резюме\n- '
-                         'Написании персональных текстов\n- Даче индивидуальных рекомендаций\n\nЧем больше знает бот — тем точнее помогает!',
+    # user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=message.from_user.id)
+    # type_sub = await type_subscriptions_repository.get_type_subscription_by_id(type_id=user_sub.type_subscription_id)
+    # date_now = datetime.now().date()
+    # days_left = date_now - user_sub.last_billing_date.date()
+    # await message.answer(f'👤 Твой профиль\n\n✓ Подписка: {type_sub.plan_name}\nДней до окончания через:'
+    #                      f' {days_left.days if type_sub.plan_name != "Free" else "Без ограничений"}\n'
+    #                      f'✓ Доступ: {"Полный ко всем функциям" if type_sub.plan_name != "Free" else "Базовое общение с агентом"}'
+    #                      f'\n\n✨ Персонализация\nХочешь идеальные ответы? Расскажи о себе в '
+    #                      '"Настройке контекста"! Бот учтёт это, например, при:\n- Составлении резюме\n- '
+    #                      'Написании персональных текстов\n- Составлении индивидуальных рекомендаций\n\nЧем больше знает бот — тем точнее помогает!',
+    #                      reply_markup=profiles_keyboard.as_markup())
+    await message.answer(f'👤 Твой профиль\n\n✓ Доступ: Полный ко всем функциям'
+                         f'\n\n✨ Персонализация\nХочешь идеальные ответы? Расскажи о себе в '
+                         '"Настройке контекста"! Бот учтёт это, например, при:\n- Составлении резюме\n- '
+                         'Написании персональных текстов\n- Составлении индивидуальных рекомендаций\n\nЧем больше знает бот — тем точнее помогает!',
                          reply_markup=profiles_keyboard.as_markup())
 
 

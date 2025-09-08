@@ -11,41 +11,39 @@ class ReferralSystemRepository:
     def __init__(self):
         self.session_maker = DatabaseEngine().create_session()
 
+        self.session_maker = DatabaseEngine().create_session()
+
     async def add_promo(self,
-                          promo_code: str,
-                          max_days: int | None = None,
-                          max_activations: int | None = None,
-                          bring_user_id: int | None = None,
-                          type_promo: str | None = None,
-                          ) -> bool:
+                        promo_code: str,
+                        days_sub: int = 30,
+                        max_activations: int | None = None,
+                        max_generations: int = 0,
+                        with_voice: bool = False,
+                        with_files: bool = False,
+                        web_search: bool = False,
+                        active: bool = True) -> bool:
         """
 
-    bring_user_id = Column(BigInteger, ForeignKey('users.user_id'), nullable=False, unique=True)
-    user: Mapped[Users] = relationship("Users", backref=__tablename__, cascade='all', lazy='subquery')
-    activate_user_id = Column(BigInteger, ForeignKey('users.user_id'), nullable=True, default=None, unique=True)
-    promo_code = Column(String, nullable=False, primary_key=True, unique=True)
-    activated = Column(Boolean, nullable=False, default=False)
-
+        Создание нового промокода
         """
         async with self.session_maker() as session:
             session: AsyncSession
             async with session.begin():
-                sql = ReferralSystem(bring_user_id=bring_user_id, promo_code=promo_code,
-                                     days_sub=max_days, max_activations=max_activations,
-                                     type_promo=type_promo)
+                sql = ReferralSystem(
+                    promo_code=promo_code,
+                    days_sub=days_sub,
+                    max_activations=max_activations,
+                    max_generations=max_generations,
+                    with_voice=with_voice,
+                    with_files=with_files,
+                    web_search=web_search,
+                    active=active,
+                )
                 try:
                     session.add(sql)
                 except Exception:
                     return False
                 return True
-
-    # async def get_promo_info_by_user_id(self, user_id: int) -> Optional[ReferralSystem]:
-    #     async with self.session_maker() as session:
-    #         session: AsyncSession
-    #         async with session.begin():
-    #             sql = select(ReferralSystem).where(or_(ReferralSystem.bring_user_id == user_id))
-    #             query = await session.execute(sql)
-    #             return query.scalars().one_or_none()
 
     async def select_all_promo(self) -> Sequence[ReferralSystem]:
         async with self.session_maker() as session:
@@ -62,14 +60,6 @@ class ReferralSystemRepository:
                 sql = select(ReferralSystem.promo_code)
                 query = await session.execute(sql)
                 return set(query.scalars().all())
-
-    async def get_promo_by_bring_user_id(self, bring_user_id: int) -> ReferralSystem:
-        async with self.session_maker() as session:
-            session: AsyncSession
-            async with session.begin():
-                sql = select(ReferralSystem).where(or_(ReferralSystem.bring_user_id == bring_user_id))
-                query = await session.execute(sql)
-                return query.scalars().one_or_none()
 
     async def get_promo_by_promo_code(self, promo_code: str) -> ReferralSystem:
         async with self.session_maker() as session:

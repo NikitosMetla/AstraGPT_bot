@@ -49,6 +49,14 @@ class PromoActivationsRepository:
                 query = await session.execute(sql)
                 return query.scalars().all()
 
+    async def get_user_ids_activations_by_promo_id(self, promo_id: int) -> Sequence:
+        async with self.session_maker() as session:
+            session: AsyncSession
+            async with session.begin():
+                sql = select(PromoActivations.activate_user_id).where(or_(PromoActivations.promo_id == promo_id))
+                query = await session.execute(sql)
+                return query.scalars().all()
+
     # async def update_activation_by_promo_id(self, promo_id: int):
     #     async with self.session_maker() as session:
     #         session: AsyncSession

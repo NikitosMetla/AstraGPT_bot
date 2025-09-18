@@ -36,6 +36,7 @@ async def sub_message(call: CallbackQuery, state: FSMContext, bot: Bot):
 
 @payment_router.callback_query(F.data.startswith("choice_sub|"), any_state)
 async def get_day_statistic(call: types.CallbackQuery, state: FSMContext, bot: Bot):
+    print("\n\n\n\nsldfjkglskdjfgjksdfg\n\n\n\n")
     user = await users_repository.get_user_by_user_id(call.from_user.id)
     call_data = call.data.split("|")
     sub_type_id = int(call_data[1])

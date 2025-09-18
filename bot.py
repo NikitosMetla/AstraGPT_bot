@@ -11,10 +11,11 @@ from loguru import logger
 
 from db.engine import DatabaseEngine
 from db.repository import admin_repository
+from handlers.payment_handler import payment_router
 from handlers.user_handler import standard_router
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from settings import storage_bot, main_bot_token, set_current_bot
+from settings import storage_bot, main_bot_token, set_current_bot, set_current_assistant
 from utils.schedulers import send_notif, safe_send_notif, job_error_listener, scheduler, monitor_scheduler
 
 
@@ -57,6 +58,8 @@ def loguru_sink_wrapper(message):
 
 async def main():
     set_current_bot(main_bot)
+    from utils.combined_gpt_tools import GPT
+    set_current_assistant(GPT())
     global _loop
     _loop = asyncio.get_running_loop()
     from datetime import datetime
@@ -100,7 +103,7 @@ async def main():
     dp = Dispatcher(storage=storage_bot)
     from utils.message_throttling import CombinedMiddleware
     dp.message.middleware.register(CombinedMiddleware())
-    dp.include_routers(standard_router)
+    dp.include_routers(payment_router, standard_router)
 
     scheduler = AsyncIOScheduler()
     # заменяем send_notif на safe_send_notif

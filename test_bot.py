@@ -15,7 +15,7 @@ from handlers.payment_handler import payment_router
 from handlers.user_handler import standard_router
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from settings import storage_bot, test_bot_token, set_current_bot
+from settings import storage_bot, test_bot_token, set_current_bot, set_current_assistant
 from utils.schedulers import send_notif, safe_send_notif, job_error_listener, scheduler, monitor_scheduler
 
 
@@ -57,7 +57,8 @@ def loguru_sink_wrapper(message):
 
 async def main():
     set_current_bot(test_bot)
-
+    from utils.completions_gpt_tools import GPTCompletions
+    set_current_assistant(assistant=GPTCompletions())
     global _loop
     _loop = asyncio.get_running_loop()
     from datetime import datetime

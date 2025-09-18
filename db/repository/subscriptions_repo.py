@@ -1,7 +1,8 @@
+import asyncio
 from datetime import datetime
 from typing import Sequence, Optional
 
-from sqlalchemy import select, or_, update, delete, and_, func
+from sqlalchemy import select, or_, update, delete, and_, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.engine import DatabaseEngine
@@ -18,13 +19,22 @@ class SubscriptionsRepository:
         async with self.session_maker() as session:
             session: AsyncSession
             async with session.begin():
-                user = Subscriptions(user_id=user_id, time_limit_subscription=time_limit_subscription,
+                sub = Subscriptions(user_id=user_id, time_limit_subscription=time_limit_subscription,
                                      active=active, type_subscription_id=type_sub_id, method_id=method_id,
                                      photo_generations=photo_generations)
-                try:
-                    session.add(user)
-                except Exception:
-                    return False
+                await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": user_id})
+
+                # ❷ На время блокировки никто другой не создаст дубль
+                exists = (await session.execute(
+                    select(Subscriptions.id)
+                    .where(and_(Subscriptions.user_id == user_id, Subscriptions.active.is_(True)))
+                    .limit(1)
+                )).scalar()
+
+                if exists:
+                    return True  # активная уже есть
+
+                session.add(sub)
                 return True
 
     async def replace_subscription(

@@ -164,3 +164,7 @@ async def keyboard_for_pay_generations(operation_id: str, url: str, generations:
     pay_ai_keyboard.row(InlineKeyboardButton(text="Оплата произведена",
                                              callback_data=f"generations_is_paid|{operation_id}|{generations}"))
     return pay_ai_keyboard
+
+
+channel_sub_keyboard = InlineKeyboardBuilder()
+channel_sub_keyboard.row(InlineKeyboardButton(text="⚡️Подписаться", url="https://t.me/sozdavai_media"))

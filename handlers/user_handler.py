@@ -16,9 +16,9 @@ from data.keyboards import profiles_keyboard, cancel_keyboard, settings_keyboard
     confirm_delete_notification_keyboard, delete_notification_keyboard
 from db.repository import users_repository, ai_requests_repository, subscriptions_repository, \
     type_subscriptions_repository, notifications_repository, referral_system_repository, promo_activations_repository
-from settings import InputMessage, photos_pages, OPENAI_ALLOWED_DOC_EXTS, gpt_assistant, sub_text
+from settings import InputMessage, photos_pages, OPENAI_ALLOWED_DOC_EXTS, get_current_assistant, sub_text, gemini_images_client
 from utils.combined_gpt_tools import NoSubscription, NoGenerations
-from utils.is_subscriber import is_subscriber
+from utils.is_subscriber import is_subscriber, is_channel_subscriber
 from utils.paginator import MechanicsPaginator
 from utils.parse_gpt_text import split_telegram_html, sanitize_with_links
 
@@ -109,6 +109,7 @@ async def process_ai_response(ai_response, message: Message, user_id: int, bot: 
 
 
 @standard_router.message(F.text == "/enter_promocode", any_state)
+@is_channel_subscriber
 async def command_enter_promocode(message: Message | CallbackQuery, state: FSMContext, bot: Bot):
     await state.set_state(InputMessage.enter_promocode)
     delete_message = await message.answer("Дорогой друг, введи промокод, который ты хочешь активировать",
@@ -117,6 +118,7 @@ async def command_enter_promocode(message: Message | CallbackQuery, state: FSMCo
 
 
 @standard_router.message(F.text, InputMessage.enter_promocode)
+@is_channel_subscriber
 async def route_enter_promocode(message: Message, state: FSMContext, bot: Bot):
     promo_code = message.text
     user_id = message.from_user.id
@@ -164,6 +166,7 @@ async def route_enter_promocode(message: Message, state: FSMContext, bot: Bot):
 
 
 @standard_router.callback_query(F.data.startswith("delete_notification"))
+@is_channel_subscriber
 async def delete_notification_handler(call: CallbackQuery, state: FSMContext, bot: Bot):
     call_data = call.data.split("|")
     notif_id = int(call_data[1])
@@ -174,6 +177,7 @@ async def delete_notification_handler(call: CallbackQuery, state: FSMContext, bo
                                  reply_markup=confirm_delete_notification_keyboard(notif_id).as_markup())
 
 @standard_router.callback_query(F.data.startswith("confirm_delete_notification|"))
+@is_channel_subscriber
 async def confirm_delete_notification_handler(call: CallbackQuery, state: FSMContext, bot: Bot):
     call_data = call.data.split("|")
     answer = call_data[1]
@@ -192,6 +196,7 @@ async def confirm_delete_notification_handler(call: CallbackQuery, state: FSMCon
 
 @standard_router.callback_query(F.data == "delete_payment", any_state)
 @standard_router.message(F.text == "/unlink_card", any_state)
+@is_channel_subscriber
 async def sub_message(message: Message | CallbackQuery, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
     user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user_id)
@@ -221,6 +226,7 @@ async def sub_message(message: Message | CallbackQuery, state: FSMContext, bot: 
 
 
 @standard_router.callback_query(F.data == "unlink_card", any_state)
+@is_channel_subscriber
 async def sub_message(call: CallbackQuery, state: FSMContext, bot: Bot):
     user_id = call.from_user.id
     user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user_id)
@@ -243,28 +249,25 @@ async def sub_message(call: CallbackQuery, state: FSMContext, bot: Bot):
 
 
 @standard_router.message(F.text == "/subscribe", any_state)
+@is_channel_subscriber
 async def sub_message(message: Message, state: FSMContext, bot: Bot):
-    await message.answer("✨Дорогой друг, на данный момент бот находится в бета-тесте и у тебя"
-                         " имеется неограниченный доступ ко всему функционалу")
-#     user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=message.from_user.id)
-#     if user_sub is None:
-#         sub_types = await type_subscriptions_repository.select_all_type_subscriptions()
-#         await message.answer(sub_text,
-#                                   reply_markup=subscriptions_keyboard(sub_types).as_markup())
-#     else:
-#         await message.answer("Дорогой друг, на данный момент у тебя подключена стандартная подписка."
-#                              " Если ты хочешь отвязать карту, то нажми на кнопку ниже",
-#                              reply_markup=delete_payment_keyboard.as_markup())
-
-
-# @standard_router.callback_query(F.data == "buy_sub")
-# async def choice_sub_message(call: CallbackQuery, state: FSMContext):
-#     await call.message.delete()
-
-
+    # await message.answer("✨Дорогой друг, на данный момент бот находится в бета-тесте и у тебя"
+    #                      " имеется неограниченный доступ ко всему функционалу")
+    user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=message.from_user.id)
+    type_sub = await type_subscriptions_repository.get_type_subscription_by_id(type_id=user_sub.type_subscription_id)
+    if user_sub is None or type_sub.plan_name == "Free":
+        sub_types = await type_subscriptions_repository.select_all_type_subscriptions()
+        await message.answer(sub_text,
+                                  reply_markup=subscriptions_keyboard(sub_types).as_markup())
+    else:
+        await message.answer(f"Дорогой друг, на данный момент у тебя подключена подписка"
+                             f" - {type_sub.plan_name} за {type_sub.price} рублей в месяц."
+                             " Если ты хочешь отвязать карту, то нажми на кнопку ниже",
+                             reply_markup=delete_payment_keyboard.as_markup())
 
 
 @standard_router.callback_query(F.data.startswith("mechanics_paginator"))
+@is_channel_subscriber
 async def get_page_paginator(call: CallbackQuery, state: FSMContext):
     call_data = call.data.split(":")
     page_now = int(call_data[2])
@@ -282,6 +285,7 @@ async def get_page_paginator(call: CallbackQuery, state: FSMContext):
 
 @standard_router.message(F.text == "/instructions", any_state)
 @standard_router.message(F.text == "/start", any_state)
+@is_channel_subscriber
 async def send_user_message(message: Message, state: FSMContext, bot: Bot, user_data):
     paginator = MechanicsPaginator(page_now=1)
     keyboard = paginator.generate_now_page()
@@ -293,31 +297,34 @@ async def send_user_message(message: Message, state: FSMContext, bot: Bot, user_
 
 
 @standard_router.message(F.text == "/profile", any_state)
+@is_channel_subscriber
 async def send_user_message(message: Message, state: FSMContext, bot: Bot):
-    # user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=message.from_user.id)
-    # type_sub = await type_subscriptions_repository.get_type_subscription_by_id(type_id=user_sub.type_subscription_id)
-    # date_now = datetime.now().date()
-    # days_left = date_now - user_sub.last_billing_date.date()
-    # await message.answer(f'👤 Твой профиль\n\n✓ Подписка: {type_sub.plan_name}\nДней до окончания через:'
-    #                      f' {days_left.days if type_sub.plan_name != "Free" else "Без ограничений"}\n'
-    #                      f'✓ Доступ: {"Полный ко всем функциям" if type_sub.plan_name != "Free" else "Базовое общение с агентом"}'
-    #                      f'\n\n✨ Персонализация\nХочешь идеальные ответы? Расскажи о себе в '
-    #                      '"Настройке контекста"! Бот учтёт это, например, при:\n- Составлении резюме\n- '
-    #                      'Написании персональных текстов\n- Составлении индивидуальных рекомендаций\n\nЧем больше знает бот — тем точнее помогает!',
-    #                      reply_markup=profiles_keyboard.as_markup())
-    await message.answer(f'👤 Твой профиль\n\n✓ Доступ: Полный ко всем функциям'
+    user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=message.from_user.id)
+    type_sub = await type_subscriptions_repository.get_type_subscription_by_id(type_id=user_sub.type_subscription_id)
+    date_now = datetime.now().date()
+    days_left = user_sub.last_billing_date.date() + timedelta(days=user_sub.time_limit_subscription) - date_now
+    await message.answer(f'👤 Твой профиль\n\n✓ Подписка: {type_sub.plan_name}\nДней до окончания через:'
+                         f' {days_left.days if type_sub.plan_name != "Free" else "Без ограничений"}\n'
+                         f'✓ Доступ: {"Полный ко всем функциям" if type_sub.plan_name != "Free" else "Базовое общение с агентом"}'
                          f'\n\n✨ Персонализация\nХочешь идеальные ответы? Расскажи о себе в '
                          '"Настройке контекста"! Бот учтёт это, например, при:\n- Составлении резюме\n- '
                          'Написании персональных текстов\n- Составлении индивидуальных рекомендаций\n\nЧем больше знает бот — тем точнее помогает!',
                          reply_markup=profiles_keyboard.as_markup())
+    # await message.answer(f'👤 Твой профиль\n\n✓ Доступ: Полный ко всем функциям'
+    #                      f'\n\n✨ Персонализация\nХочешь идеальные ответы? Расскажи о себе в '
+    #                      '"Настройке контекста"! Бот учтёт это, например, при:\n- Составлении резюме\n- '
+    #                      'Написании персональных текстов\n- Составлении индивидуальных рекомендаций\n\nЧем больше знает бот — тем точнее помогает!',
+    #                      reply_markup=profiles_keyboard.as_markup())
 
 
 @standard_router.message(F.text == "/clear_context", any_state)
+@is_channel_subscriber
 async def send_user_message(message: Message, state: FSMContext, bot: Bot):
     await message.answer('Ты уверен, что хочешь очистить контекст данного диалога?',
                          reply_markup=confirm_clear_context.as_markup())
 
 @standard_router.callback_query(F.data == "clear_context", any_state)
+@is_channel_subscriber
 async def send_user_message(call: CallbackQuery, state: FSMContext, bot: Bot):
     user_id = call.from_user.id
     await users_repository.update_thread_id_by_user_id(user_id=user_id, thread_id=None)
@@ -325,11 +332,13 @@ async def send_user_message(call: CallbackQuery, state: FSMContext, bot: Bot):
     await call.message.answer("Контекст твоего диалога очищен✨")
 
 @standard_router.callback_query(F.data == "not_clear_context", any_state)
+@is_channel_subscriber
 async def send_user_message(call: CallbackQuery, state: FSMContext, bot: Bot):
     await call.message.delete()
 
 
 @standard_router.message(F.text == "/settings", any_state)
+@is_channel_subscriber
 async def send_user_message(message: Message, state: FSMContext, bot: Bot):
     await message.answer('👤 🤖 Выбери режим работы\n\n• Универсальный — быстрые ответы на повседневные'
                          ' вопросы 😎\n• Специализированный — анализ данных, код и сложные запросы 🧠\n\nПросто'
@@ -343,6 +352,7 @@ async def send_user_message(message: Message, state: FSMContext, bot: Bot):
 
 
 @standard_router.callback_query(F.data == "edit_user_context", any_state)
+@is_channel_subscriber
 async def send_user_message(call: CallbackQuery, state: FSMContext, bot: Bot):
     user = await users_repository.get_user_by_user_id(user_id=call.from_user.id)
     delete_message = await call.message.answer(f"AstraGPT запомнит всю информацию, которую вы сейчас"
@@ -354,6 +364,7 @@ async def send_user_message(call: CallbackQuery, state: FSMContext, bot: Bot):
 
 
 @standard_router.callback_query(F.data.startswith("mode|"), any_state)
+@is_channel_subscriber
 @is_subscriber
 async def send_user_message(call: CallbackQuery, state: FSMContext, bot: Bot):
     mode = call.data.split("|")[1]
@@ -375,12 +386,14 @@ async def send_user_message(call: CallbackQuery, state: FSMContext, bot: Bot):
 
 
 @standard_router.callback_query(F.data == "cancel", any_state)
+@is_channel_subscriber
 async def send_user_message(call: CallbackQuery, state: FSMContext, bot: Bot):
     await state.clear()
     await call.message.delete()
 
 
 @standard_router.message(F.text, InputMessage.enter_user_context_state)
+@is_channel_subscriber
 async def standard_message_handler(message: Message, state: FSMContext, bot: Bot):
     state_data = await state.get_data()
     await state.clear()
@@ -392,27 +405,14 @@ async def standard_message_handler(message: Message, state: FSMContext, bot: Bot
 
 
 @standard_router.message(F.text)
+@is_channel_subscriber
 async def standard_message_handler(message: Message, bot: Bot):
     text = message.text
     user_id = message.from_user.id
     user = await users_repository.get_user_by_user_id(user_id=user_id)
-    # if user is not None and user.full_registration:
-    # user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user_id)
-    # if user_sub is None:
-    #     await message.answer("Чтобы общаться со стандартным GPT у тебя должна быть подписка",
-    #                          reply_markup=buy_sub_keyboard.as_markup())
-    #     return
-    # delete_message = await message.reply("Формулирую ответ, это займет не более 5 секунд")
     async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
         try:
-            ai_answer = await gpt_assistant.send_message(
-                user_id=user_id,
-                text=message.text
-            )
-        except:
-            print(traceback.format_exc())
-        try:
-            ai_answer = await gpt_assistant.send_message(user_id=user_id,
+            ai_answer = await get_current_assistant().send_message(user_id=user_id,
                                                          thread_id=user.standard_ai_threat_id,
                                                          text=text,
                                                          user_data=user)
@@ -436,7 +436,9 @@ async def standard_message_handler(message: Message, bot: Bot):
     F.media_group_id,                 # только альбомы
     F.content_type == "photo"         # фотографии
 )
-@media_group_handler                  # собираем в список
+
+@media_group_handler   # собираем в список
+@is_channel_subscriber
 async def handle_photo_album(messages: list[types.Message], bot: Bot):
     first = messages[0]
     user_id = first.from_user.id
@@ -458,58 +460,55 @@ async def handle_photo_album(messages: list[types.Message], bot: Bot):
         # print(msg.photo[-1].file_id)
     await users_repository.update_last_photo_id_by_user_id(photo_id=", ".join(photo_ids), user_id=user_id)
     # Отправляем весь список в GPT
-    await bot.send_chat_action(chat_id=first.chat.id, action="typing")
-    try:
-        ai_answer = await gpt_assistant.send_message(
+    async with ChatActionSender.typing(bot=bot, chat_id=first.chat.id):
+        # await bot.send_chat_action(chat_id=first.chat.id, action="typing")
+        # photo_answer = await gemini_images_client.generate_gemini_image(prompt=text,
+        #                                            reference_images=[image_buffer.read() for image_buffer in image_buffers],)
+        # photo = BufferedInputFile(file=photo_answer, filename="image.png")
+        # await first.answer_photo(photo=photo)
+        try:
+            ai_answer = await get_current_assistant().send_message(
+                user_id=user_id,
+                thread_id=user.standard_ai_threat_id,
+                text=text,
+                user_data=user,
+                image_bytes=image_buffers,
+            )
+        except NoSubscription:
+            return
+        except NoGenerations:
+            return
+
+        # Используем новую функцию для обработки ответа
+        await process_ai_response(
+            ai_response=ai_answer,
+            message=first,
             user_id=user_id,
-            thread_id=user.standard_ai_threat_id,
-            text=text,
-            user_data=user,
-            image_bytes=image_buffers,
+            bot=bot,
+            request_text=first.caption,
+            photo_id=", ".join(photo_ids),
+            has_photo=True
         )
-    except NoSubscription:
-        return
-    except NoGenerations:
-        return
-    
-    # Используем новую функцию для обработки ответа
-    await process_ai_response(
-        ai_response=ai_answer,
-        message=first,
-        user_id=user_id,
-        bot=bot,
-        request_text=first.caption,
-        photo_id=", ".join(photo_ids),
-        has_photo=True
-    )
 
 
 
 @standard_router.message(F.photo)
+@is_channel_subscriber
 async def standard_message_photo_handler(message: Message, bot: Bot):
     user_id = message.from_user.id
     user = await users_repository.get_user_by_user_id(user_id=user_id)
-    # user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user_id)
-    # if user_sub is None:
-    #     await message.answer("Чтобы общаться со стандартным GPT у тебя должна быть подписка",
-    #                          reply_markup=buy_sub_keyboard.as_markup())
-    #     return
     async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
         text = message.caption
         photo_bytes_io = io.BytesIO()
         photo_id = message.photo[-1].file_id
-        # print(photo_id)
         await users_repository.update_last_photo_id_by_user_id(photo_id=photo_id, user_id=user_id)
-        # print(photo_id)
         await bot.download(message.photo[-1], destination=photo_bytes_io)
-        # try:
-        #     ai_photo = await generate_image_bytes(prompt=message.caption, images=[photo_bytes_io.getvalue()])
-        #     await message.answer_photo(BufferedInputFile(file=ai_photo, filename="image.png"))
-        # except Exception as e:
-        #     await message.answer("ошибка")
-        # print()
+        # photo_answer = await gemini_images_client.generate_gemini_image(prompt=text,
+        #                                            reference_images=photo_bytes_io.read())
+        # photo = BufferedInputFile(file=photo_answer, filename="image.png")
+        # await message.answer_photo(photo=photo)
         try:
-            ai_answer = await gpt_assistant.send_message(user_id=user.user_id,
+            ai_answer = await get_current_assistant().send_message(user_id=user.user_id,
                                                          thread_id=user.standard_ai_threat_id,
                                                          text=text,
                                                          user_data=user,
@@ -532,29 +531,24 @@ async def standard_message_photo_handler(message: Message, bot: Bot):
 
 
 @standard_router.message(F.voice)
+@is_channel_subscriber
 @is_subscriber
 async def standard_message_voice_handler(message: Message, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
     user = await users_repository.get_user_by_user_id(user_id=user_id)
-    # if user is not None and user.full_registration:
-    # user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user_id)
-    # if user_sub is None:
-    #     await message.answer("Чтобы общаться со стандартным GPT у тебя должна быть подписка",
-    #                          reply_markup=buy_sub_keyboard.as_markup())
-    #     return
     async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
         audio_bytes_io = io.BytesIO()
         message_voice_id = message.voice.file_id
         await bot.download(message_voice_id, destination=audio_bytes_io)
         try:
-            transcribed_audio_text = await gpt_assistant.transcribe_audio(audio_bytes=audio_bytes_io)
+            transcribed_audio_text = await get_current_assistant().transcribe_audio(audio_bytes=audio_bytes_io)
         except:
             print(traceback.format_exc())
             await message.answer("Не могу распознать, что в голосовом сообщении, попробуй еще раз")
             return
         # print(transcribed_audio_text)
         try:
-            ai_answer = await gpt_assistant.send_message(
+            ai_answer = await get_current_assistant().send_message(
                 user_id=user_id,
                 thread_id=user.standard_ai_threat_id,
                 text=transcribed_audio_text,
@@ -580,6 +574,7 @@ async def standard_message_voice_handler(message: Message, state: FSMContext, bo
     F.content_type == "document"
 )
 @media_group_handler
+@is_channel_subscriber
 @is_subscriber
 async def handle_document_album(messages: list[types.Message],  state: FSMContext, bot: Bot,):
     first = messages[-1]
@@ -607,7 +602,7 @@ async def handle_document_album(messages: list[types.Message],  state: FSMContex
         file_ids.append(msg.document.file_id)
     if any(message.document.file_name.split('.')[-1].lower() in ['jpg', 'jpeg', 'png', "DNG", "gif", "dng"] for message in messages):
         try:
-            ai_answer = await gpt_assistant.send_message(
+            ai_answer = await get_current_assistant().send_message(
                 user_id=user_id,
                 thread_id=user.standard_ai_threat_id,
                 text=text,
@@ -621,7 +616,7 @@ async def handle_document_album(messages: list[types.Message],  state: FSMContex
             return
     else:
         try:
-            ai_answer = await gpt_assistant.send_message(
+            ai_answer = await get_current_assistant().send_message(
                 user_id=user_id,
                 thread_id=user.standard_ai_threat_id,
                 text=text,
@@ -647,16 +642,11 @@ async def handle_document_album(messages: list[types.Message],  state: FSMContex
 
 
 @standard_router.message(F.document, F.media_group_id.is_(None))
+@is_channel_subscriber
 @is_subscriber
 async def standard_message_document_handler(message: Message, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
     user = await users_repository.get_user_by_user_id(user_id=user_id)
-    # if user is not None and user.full_registration:
-    # user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user_id)
-    # if user_sub is None:
-    #     await message.answer("Чтобы общаться со стандартным GPT у тебя должна быть подписка",
-    #                          reply_markup=buy_sub_keyboard.as_markup())
-    #     return
     async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
         # delete_message = await message.reply("Формулирую ответ, это займет не более 5 секунд")
         text = message.caption
@@ -682,7 +672,7 @@ async def standard_message_document_handler(message: Message, state: FSMContext,
             if extension in ['jpg', 'jpeg', 'png', "DNG", "gif", "dng"]:
                 await users_repository.update_last_photo_id_by_user_id(photo_id=message.document.file_id, user_id=user_id)
                 try:
-                    ai_answer = await gpt_assistant.send_message(user_id=user_id,
+                    ai_answer = await get_current_assistant().send_message(user_id=user_id,
                                                                  thread_id=user.standard_ai_threat_id,
                                                                  text=text,
                                                                  user_data=user,
@@ -693,7 +683,7 @@ async def standard_message_document_handler(message: Message, state: FSMContext,
                     return
             else:
                 try:
-                    ai_answer = await gpt_assistant.send_message(user_id=user_id,
+                    ai_answer = await get_current_assistant().send_message(user_id=user_id,
                                                                  thread_id=user.standard_ai_threat_id,
                                                                  text=text,
                                                                  user_data=user,

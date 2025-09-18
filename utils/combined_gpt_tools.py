@@ -38,7 +38,7 @@ from utils.create_notification import (
 from utils.gpt_images import AsyncOpenAIImageClient
 from utils.new_fitroom_api import FitroomClient
 from utils.parse_gpt_text import sanitize_with_links
-from utils.runway_api import generate_image_bytes
+from utils.runway_api import generate_image_bytes, RunwayTaskFailed, format_runway_fail_for_user
 
 # combined_gpt_tools.py
 
@@ -390,23 +390,25 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
 
 
                     user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user.user_id)
-                    # if user_sub:
-                    #     type_sub = await type_subscriptions_repository.get_type_subscription_by_id(type_id=user_sub.type_subscription_id)
-                    # else:
-                    #     type_sub = None
-                    # sub_types = await type_subscriptions_repository.select_all_type_subscriptions()
-                    # if user_sub is None or (type_sub is not None and type_sub.plan_name == "Free"):
-                    #     tools_names = [tc.function.name for tc in run.required_action.submit_tool_outputs.tool_calls]
-                    #     if "edit_image_only_with_peoples" not in tools_names and "generate_image" not in tools_names:
-                    #         await main_bot.send_message(chat_id=user.user_id,
-                    #                                     text="🚨К сожалению, данная функция, которую ты"
-                    #                                 " пытаешься использовать, доступна только по подписке\n\n" + sub_text,
-                    #                                     reply_markup=subscriptions_keyboard(sub_types).as_markup())
-                    #         raise NoSubscription(f"User {user.user_id} dont has active subscription")
+                    if user_sub:
+                        type_sub = await type_subscriptions_repository.get_type_subscription_by_id(type_id=user_sub.type_subscription_id)
+                    else:
+                        type_sub = None
+                    sub_types = await type_subscriptions_repository.select_all_type_subscriptions()
+                    if user_sub is None or (type_sub is not None and type_sub.plan_name == "Free"):
+                        tools_names = [tc.function.name for tc in run.required_action.submit_tool_outputs.tool_calls]
+                        if "edit_image_only_with_peoples" not in tools_names and "generate_image" not in tools_names:
+                            await main_bot.send_message(chat_id=user.user_id,
+                                                        text="🚨К сожалению, данная функция, которую ты"
+                                                    " пытаешься использовать, доступна только по подписке\n\n" + sub_text,
+                                                        reply_markup=subscriptions_keyboard(sub_types).as_markup())
+                            raise NoSubscription(f"User {user.user_id} dont has active subscription")
                     delete_message = None
 
-
+                    print(*[tc.function.name for tc in run.required_action.submit_tool_outputs.tool_calls])
+                    send_buy_generations_text = False
                     for tc in run.required_action.submit_tool_outputs.tool_calls:
+
                         if tc.function.name == "search_web":
                             delete_message = await main_bot.send_message(text="🔍Начал поиск в интернете, анализирую страницы...",
                                                                          chat_id=user.user_id)
@@ -415,38 +417,40 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                                 text="🖌Начал настраивать напоминание, это не займет много времени...",
                                 chat_id=user.user_id)
                         else:
-                            # if user_sub.photo_generations <= 0:
-                                # generations_packets = await generations_packets_repository.select_all_generations_packets()
-                                # from settings import buy_generations_text
-                                # if type_sub.plan_name == "Free":
-                                #     await main_bot.send_message(chat_id=user.user_id,
-                                #                                 text="🚨К сожалению, данная функция, которую ты"
-                                #                                      " пытаешься использовать, доступна только по подписке\n\n" + sub_text,
-                                #                                 reply_markup=subscriptions_keyboard(
-                                #                                     sub_types).as_markup())
-                                #     raise NoSubscription(f"User {user.user_id} dont has active subscription")
-                                # await main_bot.send_message(chat_id=user_id, text=buy_generations_text,
-                                #                             reply_markup=more_generations_keyboard(generations_packets).as_markup())
-                                # # await process_assistant_run(message_response.tool_calls, user_id=user.user_id)
-                                # raise NoGenerations(f"User {user.user_id} dont has generations")
+                            if user_sub.photo_generations <= 0:
+                                generations_packets = await generations_packets_repository.select_all_generations_packets()
+                                from settings import buy_generations_text
+                                if type_sub.plan_name == "Free":
+                                    await main_bot.send_message(chat_id=user.user_id,
+                                                                text="🚨К сожалению, данная функция, которую ты"
+                                                                     " пытаешься использовать, доступна только по подписке\n\n" + sub_text,
+                                                                reply_markup=subscriptions_keyboard(
+                                                                    sub_types).as_markup())
+                                    raise NoSubscription(f"User {user.user_id} dont has active subscription")
+                                if not send_buy_generations_text:
+                                    await main_bot.send_message(chat_id=user_id, text=buy_generations_text,
+                                                                reply_markup=more_generations_keyboard(generations_packets).as_markup())
+                                    send_buy_generations_text = True
+                                # await process_assistant_run(message_response.tool_calls, user_id=user.user_id)
+                                raise NoGenerations(f"User {user.user_id} dont has generations")
                             if tc.function.name != "fitting_clothes":
                                 delete_message = await main_bot.send_message(chat_id=user.user_id,
                                                                              text="🎨Начал работу над изображением, немного магии…")
                         break
                     try:
-                        # result = await process_assistant_run(self.client, run, thread_id, user_id=user.user_id,
-                        #                                      max_photo_generations=user_sub.photo_generations)
-                        result = await process_assistant_run(self.client, run, thread_id, user_id=user.user_id)
+                        result = await process_assistant_run(self.client, run, thread_id, user_id=user.user_id,
+                                                             max_photo_generations=user_sub.photo_generations)
+                        # result = await process_assistant_run(self.client, run, thread_id, user_id=user.user_id)
                         result_images = result.get("final_images")
                         web_answer: str = result.get("web_answer")
                         notification: str = result.get("notif_answer")
-                        if len(result_images) == 0 and web_answer is None and notification is None:
+                        text_answer: str = result.get("text_answer")
+                        # print(f"\n\n\n\n\n\n\n{text_answer}\n\n\n\n\n\n\n")
+                        if len(result_images) == 0 and web_answer is None and notification is None and text_answer is None:
                             try:
                                 await delete_message.delete()
                             finally:
-                                # from bot import logger
-                                # logger.error("Не смогли сгенерировать изображение или обработать запрос😔\n\nВозможно,"
-                                #         " ты попросил что-то, что выходит за рамки норм", result)
+                                from bot import logger
                                 final_content["text"] = ("В связи с большим наплывом пользователей"
                                                          " наши сервера испытывают экстремальные нагрузки."
                                                          " Скоро генерация изображений станет снова доступна,"
@@ -466,9 +470,12 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                                 user_notifications = await notifications_repository.get_active_notifications_by_user_id(user_id=user_id)
                                 final_content["reply_markup"] = delete_notification_keyboard(user_notifications[-1].id)
                             return final_content
+                        if text_answer:
+                            final_content["text"] = sanitize_with_links(text_answer)
+                            return final_content
                         elif len(result_images) != 0:
 
-                            # await subscriptions_repository.use_generation(subscription_id=user_sub.id, count=len(result_images))
+                            await subscriptions_repository.use_generation(subscription_id=user_sub.id, count=len(result_images))
 
                             final_content["text"] = sanitize_with_links(first_msg.content[0]
                                                                         .text
@@ -837,7 +844,7 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_ge
         try:
             kwargs: dict[str, Any] = {
                 "prompt": args["prompt"],
-                "n": args.get("n", 1) if max_photo_generations and max_photo_generations > args.get("n", 1) else 3,
+                "n": args.get("n", 1) if max_photo_generations and max_photo_generations >= args.get("n", 1) else 1,
                 "size": args.get("size", DEFAULT_IMAGE_SIZE),
                 "quality": args.get("quality", "low"),
             }
@@ -851,6 +858,30 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_ge
             logger.log("GPT_ERROR",
                        f"Не смогли сгенерировать изображение или обработать запрос😔n\n {traceback.format_exc()}")
             return []
+#         try:
+#             prompt = args.get("prompt", "").strip()
+#             prompt = prompt[:400]  # максимум 200 символов
+#             # при необходимости — удалить не-ASCII символы
+#             prompt = prompt.encode('ascii', 'ignore').decode()
+#             if not prompt:
+#                 # либо возвращать понятную ошибку, либо пропускать этот tool-call
+#                 return []
+#             return [await generate_image_bytes(prompt=args.get("prompt"), ratio=args.get("size", DEFAULT_IMAGE_SIZE))]
+# #             return [await generate_image_bytes(prompt=prompt,
+# #                                                options=GenImageOptions(ratio="1920:1080",
+# #                                                                        content_moderation={"publicFigureThreshold": "low"})
+# # )]
+#         except RuntimeError as e:
+#             logger.log("GPT_ERROR", traceback.format_exc())
+#             # print(f"Runway task failed for prompt «{prompt}»: {e}")
+#             return []
+#         except Exception as e:
+#             from bot import logger
+#             logger.log("GPT_ERROR",
+#                        f"Не смогли сгенерировать изображение или обработать запрос😔n\n {traceback.format_exc()}")
+#
+#             print_log(message=f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}")
+#             return []
     if name == "fitting_clothes":
         fitroom_client = FitroomClient()
         cloth_type = (args.get("cloth_type") or "full").strip()
@@ -875,6 +906,7 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_ge
                 validate=False
             )
             return [result_bytes]
+
         except Exception:
             logger.log("GPT_ERROR",
                        f"Не смогли сгенерировать изображение или обработать запрос😔n\n {traceback.format_exc()}")
@@ -899,11 +931,21 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_ge
             if not prompt:
                 # либо возвращать понятную ошибку, либо пропускать этот tool-call
                 return []
-            return [await generate_image_bytes(prompt=args.get("prompt"), ratio=args.get("ratio"),
+            return [await generate_image_bytes(prompt=args.get("prompt"), ratio="1920:1080",
                                                images=photo_bytes if len(photo_bytes) <= 3 else photo_bytes[:3])]
+        except RunwayTaskFailed as e:
+            user_msg = format_runway_fail_for_user(getattr(e, "status", None),
+                                                   getattr(e, "code", None),
+                                                   getattr(e, "message", None))
+            if user_msg is None and user_msg != "":
+                return []
+            logger.log("GPT_ERROR", f"RunwayTaskFailed: {user_msg}")
+            return user_msg
         except RuntimeError as e:
+            logger.log("GPT_ERROR", traceback.format_exc())
             # print(f"Runway task failed for prompt «{prompt}»: {e}")
             return []
+
         except Exception as e:
             from bot import logger
             logger.log("GPT_ERROR",
@@ -924,12 +966,13 @@ async def process_assistant_run(
 ):
     """Выполняет все tool‑calls ассистента и передаёт результаты."""
     if run.status != "requires_action" or run.required_action.type != "submit_tool_outputs":
-        return {"final_images": [], "web_answer": None, "notif_answer": None}
+        return {"final_images": [], "web_answer": None, "notif_answer": None, "text_answer": None}
     image_client = image_client or AsyncOpenAIImageClient()
     outputs = []
     final_images = []
     web_answer = None
     text_answer = None
+    notif_answer = None
     images_counter = 0
     # 1) освежить run прямо перед извлечением tool_calls — мог измениться
     run = await client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
@@ -940,28 +983,45 @@ async def process_assistant_run(
 
     # 3) если пусто — корректно выйти (ничего сабмитить не нужно)
     if not tool_calls:
-        return {"final_images": [], "web_answer": None, "notif_answer": None}
+        return {"final_images": [], "web_answer": None, "notif_answer": None, "text_answer": None}
+    functions_start = []
 
     for tc in tool_calls:
         # print(tc.function.name)
-        if tc.function.name == "search_web":
+        if tc.function.name == "search_web" and "search_web" not in functions_start:
+            functions_start.append("search_web")
             web_answer = await dispatch_tool_call(tc, image_client, user_id=user_id)
             outputs.append({"tool_call_id": tc.id, "output": "Ответ от агента, который умеет"
                                                              " находить информацию в интернете" + json.dumps({"text": web_answer})})
             continue
-        if tc.function.name == "add_notification":
-            text_answer = await dispatch_tool_call(tc, image_client, user_id=user_id)
-            outputs.append({"tool_call_id": tc.id, "output": "Добавили информацию о напоминании: " + json.dumps({"text": text_answer})})
+        if tc.function.name == "add_notification" and "add_notification" not in functions_start:
+            functions_start.append("add_notification")
+            notif_answer = await dispatch_tool_call(tc, image_client, user_id=user_id)
+            outputs.append({"tool_call_id": tc.id, "output": "Добавили информацию о напоминании: " + json.dumps({"text": notif_answer})})
             continue
         if images_counter >= max_photo_generations:
             outputs.append({"tool_call_id": tc.id, "output": "Одно не было сгенерировано, так как был исчерпан лимит"})
             continue
-
+        if tc.function.name == "generate_image" and "generate_image" not in functions_start:
+            functions_start.append("generate_image")
+        elif tc.function.name == "generate_image":
+            continue
+        if tc.function.name == "edit_image_only_with_peoples" and "edit_image_only_with_peoples" not in functions_start:
+            functions_start.append("edit_image_only_with_peoples")
+        elif tc.function.name == "edit_image_only_with_peoples":
+            continue
         images = (await dispatch_tool_call(tc, image_client, user_id=user_id,
                                            max_photo_generations=max_photo_generations))
         if tc.function.name == "fitting_clothes" and isinstance(images, str):
             outputs.append({"tool_call_id": tc.id, "output": json.dumps({"text": images})})
+            text_answer=images
             continue
+        if tc.function.name == "edit_image_only_with_peoples" and isinstance(images, str):
+            # print(images)
+            outputs.append({"tool_call_id": tc.id, "output": json.dumps({"text": images})})
+            text_answer = images
+            continue
+
         if images is None:
             outputs.append({"tool_call_id": tc.id, "output": "ignored"})
             continue
@@ -981,7 +1041,7 @@ async def process_assistant_run(
     await client.beta.threads.runs.submit_tool_outputs(thread_id=thread_id, run_id=run.id, tool_outputs=outputs)
     # print("ура, картинка сделана")
     await _await_run_done(client=client , thread_id=thread_id, run_id=run.id)
-    return {"final_images": final_images, "web_answer": web_answer, "notif_answer": text_answer}
+    return {"final_images": final_images, "web_answer": web_answer, "notif_answer": notif_answer, "text_answer": text_answer}
     # return images
 
 

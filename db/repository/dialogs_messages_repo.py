@@ -1,6 +1,6 @@
 from typing import Sequence, Any
 
-from sqlalchemy import select, update, delete
+from sqlalchemy import select, update, delete, or_, asc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.engine import DatabaseEngine
@@ -35,7 +35,7 @@ class DialogsMessagesRepository:
         async with self.session_maker() as session:
             session: AsyncSession
             async with session.begin():
-                sql = select(DialogsMessages).where(DialogsMessages.user_id == user_id)
+                sql = select(DialogsMessages).where(or_(DialogsMessages.user_id == user_id)).order_by(asc(DialogsMessages.creation_date))
                 query = await session.execute(sql)
                 return query.scalars().all()
 

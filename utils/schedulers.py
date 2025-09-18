@@ -83,7 +83,7 @@ async def extend_users_sub(main_bot: Bot):
                     await main_bot.send_message(chat_id=sub.user_id,
                                                 text="Дорогой друг, не получилось автоматически продлить твою подписку."
                                                      " Если ты видишь, что при этом у тебя"
-                                                     " списались деньги - обязательно пиши нашу поддержку по команде /support")
+                                                     " списались деньги - обязательно пиши нашу поддержку @sozdav_ai")
                     continue
 
                 result = create_recurring_payment(method_id=sub.method_id,

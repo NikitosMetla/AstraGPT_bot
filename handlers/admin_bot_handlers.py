@@ -198,7 +198,8 @@ async def confirm_mailing_message(call: types.CallbackQuery, state: FSMContext, 
     users = await users_repository.select_all_users()
     main_bot = get_current_bot()
     if main_bot is None:
-        main_bot = test_bot
+        from bot import main_bot
+        main_bot = main_bot
     if is_confirm:
         await message.answer(text="Начали рассылку по пользователями с твоим отправленным фото")
         await call.message.delete()
@@ -374,9 +375,8 @@ async def route_enter_max_generations_photos(message: types.Message, state: FSMC
         max_generations_photos = int(max_generations_photos)
         promo_code = await generate_single_promo_code()
         await referral_system_repository.add_promo(promo_code=promo_code,
-                                                   max_days=max_days,
+                                                   days_sub=max_days,
                                                    max_activations=max_activations,
-                                                   type_promo="from_admin",
                                                    max_generations=max_generations_photos)
         await type_subscriptions_repository.add_type_subscription(with_files=True,
                                                                   web_search=True,

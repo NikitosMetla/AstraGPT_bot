@@ -18,11 +18,11 @@ class TypeSubscriptionsRepository:
         async with self.session_maker() as session:
             session: AsyncSession
             async with session.begin():
-                user = TypeSubscriptions(with_voice=with_voice, plan_name=plan_name,
+                sub = TypeSubscriptions(with_voice=with_voice, plan_name=plan_name,
                                      with_files=with_files, max_generations=max_generations,
                                          price=price, web_search=web_search)
                 try:
-                    session.add(user)
+                    session.add(sub)
                 except Exception:
                     return False
                 return True

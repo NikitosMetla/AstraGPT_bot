@@ -15,7 +15,7 @@ from settings import sub_text, sozdavai_channel_id, no_subscriber_message
 
 
 def is_subscriber(func):
-    from bot import logger
+    from settings import logger
     @wraps(func)
     async def wrapper(message: types.Message | types.CallbackQuery, state: FSMContext, bot: Bot, **kwargs):
         # print("========================= " + func.__name__ + " ============================")
@@ -61,7 +61,7 @@ def _find_in_args_kwargs(args, kwargs, cls):
     return None
 
 def is_channel_subscriber(func):
-    from bot import logger
+    from settings import logger
     @wraps(func)
     async def wrapper(*args, **kwargs):
         try:

@@ -72,3 +72,15 @@ class DialogsMessagesRepository:
                 await session.execute(sql)
                 await session.commit()
                 return True
+
+    async def delete_messages_by_user_id(self, user_id: int):
+        """
+        Удаление сообщения по ID сообщения.
+        """
+        async with self.session_maker() as session:
+            session: AsyncSession
+            async with session.begin():
+                sql = delete(DialogsMessages).where(or_(DialogsMessages.user_id == user_id))
+                await session.execute(sql)
+                await session.commit()
+                return True

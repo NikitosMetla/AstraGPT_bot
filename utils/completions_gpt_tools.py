@@ -57,7 +57,8 @@ from db.models import DialogsMessages
 # --- глобальные переменные и инициализация ---
 
 load_dotenv(find_dotenv())
-OPENAI_API_KEY: str | None = os.getenv("GPT_TOKEN") or os.getenv("OPENAI_API_KEY")
+NEURO_GPT_TOKEN: str | None = os.getenv("NEURO_GPT_TOKEN")
+OPENAI_API_KEY: str | None = os.getenv("GPT_TOKEN")
 DEFAULT_IMAGE_MODEL = "gpt-image-1"
 DEFAULT_IMAGE_SIZE = "1024x1024"
 
@@ -97,7 +98,7 @@ async def _retry(
 async def tts_generate_audio_mp3(text: str) -> io.BytesIO:
     url = "https://api.openai.com/v1/audio/speech"
     headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Authorization": f"Bearer {NEURO_GPT_TOKEN}",
         "Content-Type": "application/json",
     }
     payload = {
@@ -372,7 +373,7 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_ge
     #     except:
     #         return []
     if name == "generate_gemini_image":
-        from bot import logger
+        from settings import logger
         try:
             kwargs: dict[str, Any] = {
                 "prompt": args["prompt"],
@@ -397,7 +398,7 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_ge
 
         except TextRefusalError as e:
             error_text = """Модель отказалась выдавать изображение по данному описанию.  
-Рекомендация: удалить имя публичной персоны и выбрать нереалистичный стиль. Можем сгенерировать вариант «я рядом с известным футболистом №7, постер на заднем плане»."""
+Рекомендация: удалить имя публичной персоны и выбрать нереалистичный стиль."""
             logger.log("GPT_ERROR", error_text + "\n\n" + traceback.format_exc())
             return error_text
 
@@ -696,20 +697,11 @@ async def run_tools_and_followup_chat(
                 images_counter += len(result)
                 final_images.extend(result)
 
-                # Прикладываем file_ids (если нужно логике промпта)
-                file_ids = []
-                for idx, img in enumerate(result):
-                    f = await client.files.create(
-                        file=(f"result_{idx}.png", io.BytesIO(img), "image/png"),
-                        purpose="vision",
-                    )
-                    file_ids.append(f.id)
-
                 await _append_tool_message(
                     user_id=user_id,
                     tool_call_id=tool_id,
                     name=fname,
-                    content_obj={"file_ids": file_ids},
+                    content_obj={"photo_names": ", ".join([f"image_{idx + 1}.png" for idx in range(len(final_images))])},
                     outputs_messages=outputs_messages,
                 )
                 continue
@@ -722,9 +714,12 @@ async def run_tools_and_followup_chat(
                 content_obj={"status": "ok"},
                 outputs_messages=outputs_messages,
             )
-
+    except NoSubscription:
+        raise
+    except NoGenerations:
+        raise
     except Exception:
-        from bot import logger
+        from settings import logger
         logger.log("GPT_ERROR", traceback.format_exc())
     finally:
         if delete_message:
@@ -818,6 +813,10 @@ def _lighten_parts_for_storage(parts: list[dict]) -> list[dict]:
     return light
 
 
+def to_b64(data: bytes) -> str:
+    """Конвертирует байты в base64 строку"""
+    return base64.b64encode(data).decode('utf-8')
+
 
 async def build_user_content_for_chat(
     client: AsyncOpenAI,
@@ -831,6 +830,30 @@ async def build_user_content_for_chat(
     content = []
     image_names = []
     image_names: List[str] = []
+
+    MAX_TEXT_TOKENS_PER_FILE = 10000
+    TOTAL_TOKEN_BUDGET = 100000
+    total_tokens_used = 0
+
+    def estimate_tokens(text: str) -> int:
+        """Примерная оценка токенов: ~3 символа = 1 токен"""
+        return len(text) // 3
+
+    def truncate_to_tokens(text: str, max_tokens: int) -> str:
+        """Обрезает текст до указанного количества токенов"""
+        if estimate_tokens(text) <= max_tokens:
+            return text
+
+        max_chars = max_tokens * 3
+        truncated = text[:max_chars]
+
+        # Пытаемся обрезать по последней строке
+        last_newline = truncated.rfind('\n')
+        if last_newline > max_chars * 0.8:
+            truncated = truncated[:last_newline]
+
+        return truncated
+
     if image_bytes:
         image_names = [f"image_{idx}.png" for idx, _ in enumerate(image_bytes)]
 
@@ -838,25 +861,74 @@ async def build_user_content_for_chat(
     if image_names:
         text_final += f"\n\nВот названия изображений: {', '.join(image_names)}"
 
+    # if document_bytes:
+    #     text_final += "\n\nФайлы загружены:\n"
+    #     for idx, (doc_io, file_name, mime_ext) in enumerate(document_bytes):
+    #         text_final += f"- {file_name}.{mime_ext}\n"
     if document_bytes:
-        text_final += "\n\nФайлы загружены:\n"
-        for idx, (doc_io, file_name, mime_ext) in enumerate(document_bytes):
-            text_final += f"- {file_name}.{mime_ext}\n"
+        for doc_io, file_name, ext in document_bytes:
+            raw = doc_io.getvalue()
+            ext_l = (ext or "").lower().lstrip(".")
+            from settings import SUPPORTED_TEXT_FILE_TYPES
+
+            if ext_l == "pdf":
+                # PDF обрабатывается как есть (нативная поддержка)
+                base64_data = to_b64(raw)
+                data_url = f"data:application/pdf;base64,{base64_data}"
+
+                content.append({
+                    "type": "file",
+                    "file": {
+                        "filename": f"{file_name}.pdf",
+                        "file_data": data_url
+                    }
+                })
+
+            elif ext_l in SUPPORTED_TEXT_FILE_TYPES:
+                # Проверяем общий бюджет токенов
+                if total_tokens_used >= TOTAL_TOKEN_BUDGET:
+                    break  # Прекращаем обработку файлов
+
+                try:
+                    txt = raw.decode("utf-8", "replace")
+                except Exception:
+                    txt = raw.decode("latin-1", "replace")
+
+                # Вычисляем доступные токены для этого файла
+                remaining_budget = TOTAL_TOKEN_BUDGET - total_tokens_used
+                file_token_limit = min(MAX_TEXT_TOKENS_PER_FILE, remaining_budget)
+
+                # Обрезаем если нужно
+                original_tokens = estimate_tokens(txt)
+                txt = truncate_to_tokens(txt, file_token_limit)
+                final_tokens = estimate_tokens(txt)
+
+                # Добавляем информацию об обрезке если файл был обрезан
+                truncation_info = ""
+                if original_tokens > file_token_limit:
+                    truncation_info = f" [обрезан: {final_tokens} из {original_tokens} токенов]"
+
+                content.append({
+                    "type": "text",
+                    "text": f"Содержимое {file_name}.{ext_l}{truncation_info}:\n{txt}"
+                })
+
+                total_tokens_used += final_tokens
+
     content.append({"type": "text", "text": text_final})
     # Chat API ожидает строку content либо массив частей с текстом/картинками.
     if photos:
         content.extend(photos)
     return content   # чисто текст
 
-# --- Основной класс: полная замена Assistants→Completions ---
 
 class GPTCompletions:  # noqa: N801
     def __init__(self):
-        self.client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+        self.client = AsyncOpenAI(api_key=NEURO_GPT_TOKEN, base_url="https://neuroapi.host/v1")
         self.history = HistoryStore()
 
     async def _reset_client(self):
-        self.client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+        self.client = AsyncOpenAI(api_key=NEURO_GPT_TOKEN)
 
     async def send_message(
         self,
@@ -879,7 +951,7 @@ class GPTCompletions:  # noqa: N801
             "reply_markup": None
         }
         main_bot = get_current_bot()
-        from bot import logger
+        from settings import logger
         from settings import get_weekday_russian
 
         user = await users_repository.get_user_by_user_id(user_id=user_id)
@@ -970,14 +1042,19 @@ class GPTCompletions:  # noqa: N801
                     # проверки подписок/лимитов внутри run_tools_and_followup_chat
                     user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user.user_id)
                     max_photo_generations = user_sub.photo_generations if user_sub else 0
-                    final_images, web_answer, notif_answer, assistant_msgs = await run_tools_and_followup_chat(
-                        client=self.client,
-                        model=user.model_type,
-                        messages=messages + [{"role": "assistant", "content": msg.content or None, "tool_calls": [tc.model_dump() for tc in tool_calls]}],
-                        tool_calls=[tc.model_dump() for tc in tool_calls],
-                        user_id=user.user_id,
-                        max_photo_generations=max_photo_generations,
-                    )
+                    try:
+                        final_images, web_answer, notif_answer, assistant_msgs = await run_tools_and_followup_chat(
+                            client=self.client,
+                            model=user.model_type,
+                            messages=messages + [{"role": "assistant", "content": msg.content or None, "tool_calls": [tc.model_dump() for tc in tool_calls]}],
+                            tool_calls=[tc.model_dump() for tc in tool_calls],
+                            user_id=user.user_id,
+                            max_photo_generations=max_photo_generations,
+                        )
+                    except NoSubscription:
+                        raise
+                    except NoGenerations:
+                        raise
                     # print(final_images)
                     # выдача пользователю
                     if web_answer:
@@ -1084,8 +1161,11 @@ class GPTCompletions:  # noqa: N801
             except Exception:
                 await self._reset_client()
                 logger.log("GPT_ERROR", f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}")
-                final_content["text"] = ("Произошла непредвиденная ошибка, попробуй еще раз! "
-                                         "Твой запрос может содержать контент, который не разрешен нашей системой безопасности")
+                final_content["text"] = ("В связи с большим наплывом пользователей"
+                                         " наши сервера испытывают экстремальные нагрузки."
+                                         " Скоро генерация изображений станет снова доступна,"
+                                         " а пока можете воспользоваться другим функционалом."
+                                         " Я умею немало 🤗")
                 return final_content
 
     @staticmethod

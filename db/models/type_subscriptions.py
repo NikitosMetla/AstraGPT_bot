@@ -17,6 +17,7 @@ class TypeSubscriptions(BaseModel, CleanModel):
     with_voice = Column(Boolean, nullable=False, default=False)
     with_files = Column(Boolean, nullable=False, default=False)
     web_search = Column(Boolean, nullable=False, default=False)
+    from_promo = Column(Boolean, nullable=False, default=False)
 
     @property
     def stats(self) -> str:

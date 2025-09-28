@@ -17,21 +17,22 @@ payment_router = Router()
 
 
 
-@payment_router.callback_query(F.data == "unlink_card", any_state)
-async def sub_message(call: CallbackQuery, state: FSMContext, bot: Bot):
-    user_id = call.from_user.id
-    user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user_id)
-    if user_sub is None or user_sub.plan_name == "Free":
-        await call.message.answer(
-            "✨Дорогой друг, на данный момент у тебя нет активной подписки и привязанной карты в частности")
-        return
-    if user_sub.method_id is None:
-        await call.message.answer(
-            "✨Дорогой друг, на данный момент у тебя уже не привязана никакая карта")
-        return
-    await subscriptions_repository.delete_payment_method(subscription_id=user_sub.id)
-    await call.message.delete()
-    await call.message.answer("Отлично, отвязали твой метод оплаты. Теперь твоя подписка не сможет продлеваться автоматически")
+# @payment_router.callback_query(F.data == "unlink_card", any_state)
+# async def sub_message(call: CallbackQuery, state: FSMContext, bot: Bot):
+#     user_id = call.from_user.id
+#     user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user_id)
+#     type_sub = await type_subscriptions_repository.get_type_subscription_by_id(type_id=user_sub.type_subscription_id)
+#     if user_sub is None or type_sub.plan_name == "Free":
+#         await call.message.answer(
+#             "✨Дорогой друг, на данный момент у тебя нет активной подписки и привязанной карты в частности")
+#         return
+#     if user_sub.method_id is None:
+#         await call.message.answer(
+#             "✨Дорогой друг, на данный момент у тебя уже не привязана никакая карта")
+#         return
+#     await subscriptions_repository.delete_payment_method(sub_id=user_sub.id)
+#     await call.message.delete()
+#     await call.message.answer("Отлично, отвязали твой метод оплаты. Теперь твоя подписка не сможет продлеваться автоматически")
 
 
 @payment_router.callback_query(F.data.startswith("choice_sub|"), any_state)
@@ -55,7 +56,7 @@ async def get_day_statistic(call: types.CallbackQuery, state: FSMContext, bot: B
             return
     payment = await create_payment(user.email, amount=price)
     await operation_repository.add_operation(operation_id=payment[0], user_id=call.from_user.id, is_paid=False,
-                                                     url=payment[1])
+                                                     url=payment[1], sub_type_id=sub_type_id)
     operation = await operation_repository.get_operation_by_operation_id(payment[0])
     keyboard = await keyboard_for_pay(operation_id=operation.id, url=payment[1], time_limit=30,
                                       type_sub_id=sub_type_id)
@@ -82,7 +83,7 @@ async def enter_user_email(message: types.Message, state: FSMContext, bot: Bot):
         user = await users_repository.get_user_by_user_id(message.from_user.id)
         payment = await create_payment(user.email, amount=price)
         await operation_repository.add_operation(operation_id=payment[0], user_id=message.from_user.id, is_paid=False,
-                                                 url=payment[1])
+                                                 url=payment[1], sub_type_id=type_sub_id)
         operation = await operation_repository.get_operation_by_operation_id(payment[0])
         keyboard = await keyboard_for_pay(operation_id=operation.id, url=payment[1], time_limit=30,
                                           type_sub_id=type_sub_id)

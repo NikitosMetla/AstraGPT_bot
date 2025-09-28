@@ -13,6 +13,9 @@ class FitroomAPIError(Exception):
     """Base exception for Fitroom API errors."""
     pass
 
+class CreditsFitroomAPIError(Exception):
+    pass
+
 
 class TryonTaskFailed(FitroomAPIError):
     """Raised when a try-on task fails."""
@@ -50,7 +53,7 @@ class FitroomClient:
                     text = await resp.text()
 
                     if resp.status == 402:
-                        raise FitroomAPIError(
+                        raise CreditsFitroomAPIError(
                             "Ошибка 402: недостаточно кредитов. "
                             "Пожалуйста, пополните баланс в личном кабинете."
                         )

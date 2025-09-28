@@ -388,7 +388,7 @@ async def generate_image_bytes(
     max_poll_interval: float = 15.0,
     max_retries: int = 3,
 ) -> bytes:
-    from bot import logger
+    from settings import logger
     """
     - Создаёт задачу text_to_image (Gen-4 Image)
     - Поллит её статус до SUCCEEDED/FAILED/timeout

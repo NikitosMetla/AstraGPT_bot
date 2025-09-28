@@ -8,8 +8,7 @@ from aiogram.enums import ParseMode
 from aiogram.types import Message, CallbackQuery, TelegramObject
 
 from db.repository import users_repository, admin_repository, events_repository, subscriptions_repository
-from settings import MESSAGE_SPAM_TIMING
-from bot import logger
+from settings import MESSAGE_SPAM_TIMING, logger
 
 
 class CombinedMiddleware(BaseMiddleware):

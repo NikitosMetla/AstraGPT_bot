@@ -84,6 +84,14 @@ class SubscriptionsRepository:
                 query = await session.execute(sql)
                 return query.scalars().one_or_none()
 
+    async def get_all_active_subscriptions(self) -> Sequence[Subscriptions]:
+        async with self.session_maker() as session:
+            session: AsyncSession
+            async with session.begin():
+                sql = select(Subscriptions).where(or_(Subscriptions.active == True))
+                query = await session.execute(sql)
+                return query.scalars().all()
+
     async def get_subscription_by_id(self, id: int) -> Subscriptions:
         async with self.session_maker() as session:
             session: AsyncSession
@@ -175,10 +183,18 @@ class SubscriptionsRepository:
         async with self.session_maker() as session:
             session: AsyncSession
             async with session.begin():
-                query = select(func.count(Subscriptions.user_id)).where(or_(Subscriptions.active == True))
+                query = select(func.count(Subscriptions.user_id)).where(and_(Subscriptions.active == True, Subscriptions.type_subscription_id != 2))
                 result = await session.execute(query)
                 count_active = result.scalar() or 0
                 return count_active
+
+    async def delete_payment_method(self, sub_id: int):
+        async with self.session_maker() as session:
+            session: AsyncSession
+            async with session.begin():
+                sql = update(Subscriptions).values({Subscriptions.method_id: None}).where(or_(Subscriptions.id == sub_id))
+                await session.execute(sql)
+                await session.commit()
 
 
 

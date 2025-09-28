@@ -114,7 +114,7 @@ class GPTResponses:  # API через /v1/responses
     ) -> Dict[str, Any]:
         final_content = {"text": None, "image_files": [], "files": [], "audio_file": None, "reply_markup": None}
         main_bot = get_current_bot()
-        from bot import logger
+        from settings import logger
         from settings import get_weekday_russian
 
         user = await users_repository.get_user_by_user_id(user_id=user_id)
@@ -742,7 +742,7 @@ class GPTResponses:  # API через /v1/responses
                 return [await generate_image_bytes(prompt=args.get("prompt"), ratio=args.get("ratio"),
                                                    images=photo_bytes if len(photo_bytes) <= 3 else photo_bytes[:3])]
             except:
-                from bot import logger
+                from settings import logger
                 logger.log("GPT_ERROR", f"{user_id} | Ошибка edit_image_only_with_peoples: {traceback.format_exc()}")
                 print_log(message=f"{user_id} | Ошибка edit_image_only_with_peoples: {traceback.format_exc()}")
                 return []

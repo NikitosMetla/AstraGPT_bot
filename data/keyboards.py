@@ -32,6 +32,15 @@ buy_sub_keyboard.row(InlineKeyboardButton(text="🚀Купить подписк�
 
 menu_button = InlineKeyboardButton(text="В меню", callback_data="start_menu")
 
+
+def choice_generation_mode_keyboard(generations: int, delete_keyboard_message_id: int):
+    keyboard = InlineKeyboardBuilder()
+    keyboard.row(InlineKeyboardButton(text="👕Верх", callback_data=f"choice_generation_mode|upper|{generations}|{delete_keyboard_message_id}"))
+    keyboard.add(InlineKeyboardButton(text="👖Низ", callback_data=f"choice_generation_mode|lower|{generations}|{delete_keyboard_message_id}"))
+    keyboard.row(InlineKeyboardButton(text="🧥Полный образ(или платье)", callback_data=f"choice_generation_mode|full|{generations}|{delete_keyboard_message_id}"))
+    keyboard.row(InlineKeyboardButton(text="Отмена", callback_data="cancel"))
+    return keyboard
+
 async def keyboard_for_pay(operation_id: str, url: str, time_limit: int, type_sub_id: int):
     pay_ai_keyboard = InlineKeyboardBuilder()
     pay_ai_keyboard.row(InlineKeyboardButton(text="Оплатить", web_app=WebAppInfo(url=url)))
@@ -43,7 +52,7 @@ async def keyboard_for_pay(operation_id: str, url: str, time_limit: int, type_su
 def subscriptions_keyboard(type_subs: list):
     keyboard = InlineKeyboardBuilder()
     for type_sub in type_subs:
-        if type_sub.plan_name == "Free":
+        if type_sub.plan_name == "Free" or type_sub.from_promo:
             continue
         keyboard.row(InlineKeyboardButton(text=f"{type_sub.plan_name} - {type_sub.price} ₽/мес",
                                           callback_data=f"choice_sub|{type_sub.id}"))

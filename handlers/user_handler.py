@@ -15,7 +15,8 @@ from data.keyboards import profiles_keyboard, cancel_keyboard, settings_keyboard
     confirm_clear_context, buy_sub_keyboard, subscriptions_keyboard, delete_payment_keyboard, unlink_card_keyboard, \
     confirm_delete_notification_keyboard, delete_notification_keyboard
 from db.repository import users_repository, ai_requests_repository, subscriptions_repository, \
-    type_subscriptions_repository, notifications_repository, referral_system_repository, promo_activations_repository
+    type_subscriptions_repository, notifications_repository, referral_system_repository, promo_activations_repository, \
+    dialogs_messages_repository
 from settings import InputMessage, photos_pages, OPENAI_ALLOWED_DOC_EXTS, get_current_assistant, sub_text, gemini_images_client
 from utils.combined_gpt_tools import NoSubscription, NoGenerations
 from utils.is_subscriber import is_subscriber, is_channel_subscriber
@@ -243,7 +244,7 @@ async def sub_message(call: CallbackQuery, state: FSMContext, bot: Bot):
         await call.message.answer(
             "✨Дорогой друг, на данный момент у тебя уже не привязана никакая карта")
         return
-    await subscriptions_repository.delete_payment_method(subscription_id=user_sub.id)
+    await subscriptions_repository.delete_payment_method(sub_id=user_sub.id)
     await call.message.delete()
     await call.message.answer("Отлично, отвязали твой метод оплаты. Теперь твоя подписка не сможет продлеваться автоматически")
 
@@ -320,6 +321,7 @@ async def send_user_message(message: Message, state: FSMContext, bot: Bot):
 @standard_router.message(F.text == "/clear_context", any_state)
 @is_channel_subscriber
 async def send_user_message(message: Message, state: FSMContext, bot: Bot):
+    await state.clear()
     await message.answer('Ты уверен, что хочешь очистить контекст данного диалога?',
                          reply_markup=confirm_clear_context.as_markup())
 
@@ -327,7 +329,8 @@ async def send_user_message(message: Message, state: FSMContext, bot: Bot):
 @is_channel_subscriber
 async def send_user_message(call: CallbackQuery, state: FSMContext, bot: Bot):
     user_id = call.from_user.id
-    await users_repository.update_thread_id_by_user_id(user_id=user_id, thread_id=None)
+    await dialogs_messages_repository.delete_messages_by_user_id(user_id=user_id)
+    # await users_repository.update_thread_id_by_user_id(user_id=user_id, thread_id=None)
     await call.message.delete()
     await call.message.answer("Контекст твоего диалога очищен✨")
 
@@ -340,6 +343,7 @@ async def send_user_message(call: CallbackQuery, state: FSMContext, bot: Bot):
 @standard_router.message(F.text == "/settings", any_state)
 @is_channel_subscriber
 async def send_user_message(message: Message, state: FSMContext, bot: Bot):
+    await state.clear()
     await message.answer('👤 🤖 Выбери режим работы\n\n• Универсальный — быстрые ответы на повседневные'
                          ' вопросы 😎\n• Специализированный — анализ данных, код и сложные запросы 🧠\n\nПросто'
                          ' нажми на нужный вариант — и мы сразу поможем!',
@@ -348,6 +352,7 @@ async def send_user_message(message: Message, state: FSMContext, bot: Bot):
 
 @standard_router.message(F.text == "/support", any_state)
 async def send_user_message(message: Message, state: FSMContext, bot: Bot):
+    await state.clear()
     await message.answer('☎️ Дорогой друг, чтобы связаться с нами - напиши в наш чат поддержки @sozdav_ai')
 
 
@@ -406,7 +411,8 @@ async def standard_message_handler(message: Message, state: FSMContext, bot: Bot
 
 @standard_router.message(F.text)
 @is_channel_subscriber
-async def standard_message_handler(message: Message, bot: Bot):
+async def standard_message_handler(message: Message, state: FSMContext, bot: Bot):
+    await state.clear()
     text = message.text
     user_id = message.from_user.id
     user = await users_repository.get_user_by_user_id(user_id=user_id)
@@ -439,7 +445,8 @@ async def standard_message_handler(message: Message, bot: Bot):
 
 @media_group_handler   # собираем в список
 @is_channel_subscriber
-async def handle_photo_album(messages: list[types.Message], bot: Bot):
+async def handle_photo_album(messages: list[types.Message], state: FSMContext, bot: Bot):
+    await state.clear()
     first = messages[0]
     user_id = first.from_user.id
     await bot.send_chat_action(chat_id=first.chat.id, action="typing")
@@ -494,7 +501,8 @@ async def handle_photo_album(messages: list[types.Message], bot: Bot):
 
 @standard_router.message(F.photo)
 @is_channel_subscriber
-async def standard_message_photo_handler(message: Message, bot: Bot):
+async def standard_message_photo_handler(message: Message, state: FSMContext, bot: Bot):
+    await state.clear()
     user_id = message.from_user.id
     user = await users_repository.get_user_by_user_id(user_id=user_id)
     async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
@@ -534,14 +542,20 @@ async def standard_message_photo_handler(message: Message, bot: Bot):
 @is_channel_subscriber
 @is_subscriber
 async def standard_message_voice_handler(message: Message, state: FSMContext, bot: Bot):
+    await state.clear()
     user_id = message.from_user.id
     user = await users_repository.get_user_by_user_id(user_id=user_id)
     async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
         audio_bytes_io = io.BytesIO()
-        message_voice_id = message.voice.file_id
-        await bot.download(message_voice_id, destination=audio_bytes_io)
+        await bot.download(message.voice.file_id, destination=audio_bytes_io)
+        # Telegram сообщает mime_type для voice
+        mime = getattr(message.voice, "mime_type", None)  # Telegram даёт audio/ogg и т.п.
+
         try:
-            transcribed_audio_text = await get_current_assistant().transcribe_audio(audio_bytes=audio_bytes_io)
+            transcribed_audio_text = await get_current_assistant().transcribe_audio(
+                audio_bytes=audio_bytes_io,
+                language="ru"
+            )
         except:
             print(traceback.format_exc())
             await message.answer("Не могу распознать, что в голосовом сообщении, попробуй еще раз")
@@ -577,6 +591,7 @@ async def standard_message_voice_handler(message: Message, state: FSMContext, bo
 @is_channel_subscriber
 @is_subscriber
 async def handle_document_album(messages: list[types.Message],  state: FSMContext, bot: Bot,):
+    await state.clear()
     first = messages[-1]
     user_id = first.from_user.id
     user = await users_repository.get_user_by_user_id(user_id=user_id)
@@ -645,6 +660,7 @@ async def handle_document_album(messages: list[types.Message],  state: FSMContex
 @is_channel_subscriber
 @is_subscriber
 async def standard_message_document_handler(message: Message, state: FSMContext, bot: Bot):
+    await state.clear()
     user_id = message.from_user.id
     user = await users_repository.get_user_by_user_id(user_id=user_id)
     async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):

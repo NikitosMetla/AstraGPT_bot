@@ -117,8 +117,27 @@ async def enter_type_users_for_mailing(call: types.CallbackQuery, state: FSMCont
             f"   С файлами: <b>{ai_stat['all_time']['with_files']}</b>"
         )
     else:
-        sub_stat = await subscriptions_repository.get_active_subscriptions_count()
-        text_message = f"Количество пользователей, у которых на данный подписка: <b>{sub_stat}</b>"
+        active_subs= await subscriptions_repository.get_all_active_subscriptions()
+        types_stat = {
+            "Free": 0,
+            "Ultima": 0,
+            "Smart": 0,
+            "from promo": 0
+        }
+        types_ids = {}
+        types_sub = await type_subscriptions_repository.select_all_type_subscriptions()
+        for type_sub in types_sub:
+            types_ids[type_sub.id] = type_sub.plan_name if not type_sub.from_promo else "from promo"
+
+        for sub in active_subs:
+            type_for_stat = types_ids.get(sub.type_subscription_id)
+            types_stat[type_for_stat] += 1
+        text_message = (f"Количество пользователей, у которых на данный подписка:\n\n"
+                        f"Бесплатная подписка - <b>{types_stat.get('Free')} пользователей</b>\n"
+                        f"Smart подписка - <b>{types_stat.get('Smart')} пользователей</b>\n"
+                        f"Ultima подписка - <b>{types_stat.get('Ultima')} пользователей</b>\n"
+                        f"Подписка, полученная по промокоду - <b>{types_stat.get('from promo')} пользователей</b>"
+                        )
     await call.message.answer(text=text_message, parse_mode="HTML")
     await call.message.delete()
 
@@ -383,7 +402,8 @@ async def route_enter_max_generations_photos(message: types.Message, state: FSMC
                                                                   with_voice=True,
                                                                   plan_name=f"promo_{promo_code}",
                                                                   price=0,
-                                                                  max_generations=max_generations_photos)
+                                                                  max_generations=max_generations_photos,
+                                                                  from_promo=True)
         await message.answer(f"Отлично, ты выпустил промокод!\n\nПромокод: <code>{promo_code}</code>")
         return
     else:

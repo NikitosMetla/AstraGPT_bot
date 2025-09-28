@@ -281,7 +281,7 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
             "reply_markup": None
         }
         main_bot = get_current_bot()
-        from bot import logger
+        from settings import logger
         from settings import get_weekday_russian
         """Отправляет пользовательский запрос с опциональными вложениями."""
         # При каждом запросе обновляем текущий thread, если он передан явно
@@ -450,7 +450,7 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                             try:
                                 await delete_message.delete()
                             finally:
-                                from bot import logger
+                                from settings import logger
                                 final_content["text"] = ("В связи с большим наплывом пользователей"
                                                          " наши сервера испытывают экстремальные нагрузки."
                                                          " Скоро генерация изображений станет снова доступна,"
@@ -488,7 +488,7 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                         print(traceback.format_exc())
                         if delete_message:
                             await delete_message.delete()
-                        from bot import logger
+                        from settings import logger
                         logger.log(
                             "GPT_ERROR",
                             f"{user_id} | Ошибка в ответе gpt: {traceback.format_exc()}"
@@ -655,7 +655,7 @@ class GPT:  # noqa: N801 – сохраняем оригинальное имя
                         # print("попытка")
                         file_info = await retrieve_with_retry(self.client, file_id=img_file.id)
                     except RuntimeError:
-                        from bot import logger
+                        from settings import logger
                         logger.log(
                             "GPT_ERROR",
                             f" Ошибка в ответе gpt: {traceback.format_exc()}"
@@ -766,7 +766,7 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_ge
 
     # --- 2. Приводим arguments к dict ---
     import json
-    from bot import logger
+    from settings import logger
     if isinstance(args_raw, dict):
         args = args_raw
     else:
@@ -876,7 +876,7 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_ge
 #             # print(f"Runway task failed for prompt «{prompt}»: {e}")
 #             return []
 #         except Exception as e:
-#             from bot import logger
+#             from settings import logger
 #             logger.log("GPT_ERROR",
 #                        f"Не смогли сгенерировать изображение или обработать запрос😔n\n {traceback.format_exc()}")
 #
@@ -947,7 +947,7 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_ge
             return []
 
         except Exception as e:
-            from bot import logger
+            from settings import logger
             logger.log("GPT_ERROR",
                        f"Не смогли сгенерировать изображение или обработать запрос😔n\n {traceback.format_exc()}")
 

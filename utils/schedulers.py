@@ -14,7 +14,7 @@ scheduler: AsyncIOScheduler | None = None
 
 
 async def safe_send_notif(bot: Bot):
-    from bot import logger
+    from settings import logger
     """
     Вокруг send_notif — своя зона try/except.
     Любая ошибка там отлавливается и логируется, но планировщик продолжит жить.
@@ -25,14 +25,14 @@ async def safe_send_notif(bot: Bot):
         logger.exception("Ошибка в send_notif")
 
 def job_error_listener(event):
-    from bot import logger
+    from settings import logger
     """
     Листенер для ошибок внутри задач.
     """
     logger.error(f"Job {event.job_id} failed: {event.exception}")
 
 async def monitor_scheduler():
-    from bot import logger
+    from settings import logger
     """
     Периодически проверяем, что scheduler.running==True, иначе перезапускаем.
     """
@@ -52,7 +52,7 @@ async def send_notif(bot: Bot):
     moscow_tz = pytz.timezone('Europe/Moscow')
     utc_now = datetime.datetime.utcnow()
     moscow_now = utc_now.replace(tzinfo=pytz.UTC).astimezone(moscow_tz)
-    
+
     # Убираем timezone info для сравнения с naive datetime из БД
     moscow_now_naive = moscow_now.replace(tzinfo=None)
     
@@ -71,7 +71,7 @@ async def send_notif(bot: Bot):
 
 #
 async def extend_users_sub(main_bot: Bot):
-    from bot import logger
+    from settings import logger
     users_subs = await subscriptions_repository.select_all_active_subscriptions()
     now_datetime = datetime.datetime.now()
     for sub in users_subs:

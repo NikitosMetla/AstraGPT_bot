@@ -12,7 +12,7 @@ from data.keyboards import admin_keyboard, add_delete_admin, cancel_keyboard, ba
     db_tables_keyboard, type_users_mailing_keyboard, statistics_keyboard, confirm_send_mailing
 from db.repository import admin_repository, users_repository, ai_requests_repository, subscriptions_repository, \
     referral_system_repository, events_repository, type_subscriptions_repository
-from settings import InputMessage, business_connection_id, get_current_bot
+from settings import InputMessage, business_connection_id, get_current_bot, read_promo_codes, EXCEL_EXTENSIONS
 from test_bot import test_bot
 from utils.generate_promo import generate_single_promo_code
 from utils.get_table_db_to_excel import export_table_to_memory
@@ -28,6 +28,52 @@ async def admin_cancel(call: types.CallbackQuery, state: FSMContext, bot: Bot):
     await state.clear()
     await call.message.answer(text="Вы находитесь на стартовой панели, выберите свои дальнейшие действия", reply_markup=admin_keyboard)
     await call.message.delete()
+
+
+@admin_router.message(F.text=="/promo_excel", any_state)
+@admin_router.message(F.text=="Таблица с пойзона", any_state)
+async def send_promo_table(message: types.Message, state: FSMContext, bot: Bot):
+    await state.clear()
+    await message.answer("Отправьте excel таблицу с промокодами", reply_markup=cancel_keyboard.as_markup())
+    await state.set_state(InputMessage.send_excel_promo)
+
+@admin_router.message(F.document, any_state)
+async def get_promo_table(message: types.Message, state: FSMContext, bot: Bot):
+    try:
+        file_buffer = io.BytesIO()
+        if "." + message.document.file_name.split(".")[-1] not in EXCEL_EXTENSIONS:
+            await message.answer("Неправильный тип файла, убедись, что ты отправляешь excel таблицу")
+            return
+        await bot.download(file=message.document, destination=file_buffer)
+        promo_list = read_promo_codes(file_buffer.getvalue())
+        await message.answer("Таблица успешно загружена")
+        for promo_code in promo_list:
+            try:
+                max_generations_photos = 5
+                max_days = 7
+                max_activations = 1
+                result = await referral_system_repository.get_promo_by_promo_code(promo_code=str(promo_code))
+                if result:
+                    continue
+                await referral_system_repository.add_promo(promo_code=str(promo_code),
+                                                           days_sub=max_days,
+                                                           max_activations=max_activations,
+                                                           max_generations=max_generations_photos)
+                await type_subscriptions_repository.add_type_subscription(with_files=True,
+                                                                          web_search=True,
+                                                                          with_voice=True,
+                                                                          plan_name=f"promo_{promo_code}",
+                                                                          price=0,
+                                                                          max_generations=max_generations_photos,
+                                                                          from_promo=True)
+            except:
+                from settings import logger
+                logger.log('ERROR_HANDLER', f"Error in promo_code {promo_code}\n\n" + traceback.format_exc())
+        await message.answer("Процесс добавления промокодов завершен!")
+    except:
+        from settings import logger
+        logger.log("ERROR_HANDLER", "Error in promo file\n\n" + traceback.format_exc())
+        await message.answer("Произошла ошибка, проверь корректность файла")
 
 
 @admin_router.callback_query(F.data.startswith("db_tables|"), any_state)

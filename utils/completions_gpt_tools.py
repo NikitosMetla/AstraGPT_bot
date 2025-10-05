@@ -1,5 +1,3 @@
-# gpt_completions.py
-
 from __future__ import annotations
 
 import asyncio
@@ -397,8 +395,8 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_ge
             return error_text
 
         except TextRefusalError as e:
-            error_text = """Модель отказалась выдавать изображение по данному описанию.  
-Рекомендация: удалить имя публичной персоны и выбрать нереалистичный стиль."""
+            error_text = """Модель отказалась выполнить запрос, так как он нарушает правила или содержит элементы, которые не могут быть корректно обработаны. Это может происходить, если описание противоречит изображению, затрагивает чувствительные темы или содержит недопустимые элементы.
+Рекомендация: попробуйте упростить запрос, убрать имена публичных персон и выбрать нереалистичный стиль (например, cartoon/illustration)."""
             logger.log("GPT_ERROR", error_text + "\n\n" + traceback.format_exc())
             return error_text
 
@@ -825,7 +823,6 @@ async def build_user_content_for_chat(
     document_bytes: Sequence[tuple[io.BytesIO, str, str]] | None,
     audio_bytes: io.BytesIO | None,
 ) -> List[dict]:
-    # Chat Completions: изображения – через image_url base64, документы – как текстовое перечисление
     photos: List[dict] = []
     content = []
     image_names = []
@@ -836,18 +833,15 @@ async def build_user_content_for_chat(
     total_tokens_used = 0
 
     def estimate_tokens(text: str) -> int:
-        """Примерная оценка токенов: ~3 символа = 1 токен"""
         return len(text) // 3
 
     def truncate_to_tokens(text: str, max_tokens: int) -> str:
-        """Обрезает текст до указанного количества токенов"""
         if estimate_tokens(text) <= max_tokens:
             return text
 
         max_chars = max_tokens * 3
         truncated = text[:max_chars]
 
-        # Пытаемся обрезать по последней строке
         last_newline = truncated.rfind('\n')
         if last_newline > max_chars * 0.8:
             truncated = truncated[:last_newline]
@@ -855,55 +849,51 @@ async def build_user_content_for_chat(
         return truncated
 
     if image_bytes:
-        image_names = [f"image_{idx}.png" for idx, _ in enumerate(image_bytes)]
+        for idx, img_io in enumerate(image_bytes):
+            try:
+                img_io.seek(0)
+                img_data = img_io.read()
+                base64_image = base64.b64encode(img_data).decode('utf-8')
+
+                content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{base64_image}"
+                    }
+                })
+
+                image_names.append(f"image_{idx}.png")
+
+            except Exception as e:
+                print(f"[ERROR] Failed to process image {idx}: {e}")
+                continue
 
     text_final = f"Сегодня - {get_current_datetime_string()} по Москве.\n\n{text or 'Вот информация'}"
     if image_names:
         text_final += f"\n\nВот названия изображений: {', '.join(image_names)}"
 
-    # if document_bytes:
-    #     text_final += "\n\nФайлы загружены:\n"
-    #     for idx, (doc_io, file_name, mime_ext) in enumerate(document_bytes):
-    #         text_final += f"- {file_name}.{mime_ext}\n"
     if document_bytes:
         for doc_io, file_name, ext in document_bytes:
             raw = doc_io.getvalue()
             ext_l = (ext or "").lower().lstrip(".")
             from settings import SUPPORTED_TEXT_FILE_TYPES
 
-            if ext_l == "pdf":
-                # PDF обрабатывается как есть (нативная поддержка)
-                base64_data = to_b64(raw)
-                data_url = f"data:application/pdf;base64,{base64_data}"
-
-                content.append({
-                    "type": "file",
-                    "file": {
-                        "filename": f"{file_name}.pdf",
-                        "file_data": data_url
-                    }
-                })
-
-            elif ext_l in SUPPORTED_TEXT_FILE_TYPES:
-                # Проверяем общий бюджет токенов
+            if ext_l in SUPPORTED_TEXT_FILE_TYPES:
                 if total_tokens_used >= TOTAL_TOKEN_BUDGET:
-                    break  # Прекращаем обработку файлов
+                    break
 
                 try:
                     txt = raw.decode("utf-8", "replace")
                 except Exception:
                     txt = raw.decode("latin-1", "replace")
 
-                # Вычисляем доступные токены для этого файла
                 remaining_budget = TOTAL_TOKEN_BUDGET - total_tokens_used
                 file_token_limit = min(MAX_TEXT_TOKENS_PER_FILE, remaining_budget)
 
-                # Обрезаем если нужно
                 original_tokens = estimate_tokens(txt)
                 txt = truncate_to_tokens(txt, file_token_limit)
                 final_tokens = estimate_tokens(txt)
 
-                # Добавляем информацию об обрезке если файл был обрезан
                 truncation_info = ""
                 if original_tokens > file_token_limit:
                     truncation_info = f" [обрезан: {final_tokens} из {original_tokens} токенов]"
@@ -916,10 +906,10 @@ async def build_user_content_for_chat(
                 total_tokens_used += final_tokens
 
     content.append({"type": "text", "text": text_final})
-    # Chat API ожидает строку content либо массив частей с текстом/картинками.
     if photos:
         content.extend(photos)
-    return content   # чисто текст
+    return content
+
 
 
 class GPTCompletions:  # noqa: N801
@@ -928,7 +918,7 @@ class GPTCompletions:  # noqa: N801
         self.history = HistoryStore()
 
     async def _reset_client(self):
-        self.client = AsyncOpenAI(api_key=NEURO_GPT_TOKEN)
+        self.client = AsyncOpenAI(api_key=NEURO_GPT_TOKEN, base_url="https://neuroapi.host/v1")
 
     async def send_message(
         self,

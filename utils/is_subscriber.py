@@ -106,7 +106,8 @@ def is_channel_subscriber(func):
             user_id = cb.from_user.id if cb else msg.from_user.id
             member = await bot.get_chat_member(sozdavai_channel_id, user_id)
             user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id)
-
+            if user_sub.is_paid_sub:
+                return await func(*args, **kwargs)
             if member.status in {"member", "administrator", "creator"} or user_sub.type_subscription_id != 2:
                 return await func(*args, **kwargs)
 

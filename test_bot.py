@@ -1,10 +1,12 @@
 import asyncio
 import datetime
+import traceback
 
 from aiogram import Dispatcher, Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from apscheduler.events import EVENT_JOB_ERROR, EVENT_SCHEDULER_SHUTDOWN
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_SCHEDULER_SHUTDOWN, EVENT_SCHEDULER_PAUSED
+from datetime import datetime as dt
 
 from db.engine import DatabaseEngine
 from handlers.payment_handler import payment_router
@@ -13,12 +15,13 @@ from handlers.user_handler import standard_router
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 
+
 from settings import (
     storage_bot, test_bot_token, set_current_bot, set_current_assistant, 
     initialize_logger, set_current_loop, logger
 )
-from utils.schedulers import send_notif, safe_send_notif, job_error_listener, scheduler, monitor_scheduler
-
+from utils.schedulers import send_notif, safe_send_notif, job_error_listener, scheduler, monitor_scheduler, \
+    extend_users_sub, scheduler_shutdown_listener, scheduler_paused_listener, safe_extend_users_sub
 
 test_bot = Bot(token=test_bot_token,
                default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -53,11 +56,31 @@ async def main():
         max_instances=20,
         misfire_grace_time=120
     )
+
+    # Задача проверки подписок - каждые 3 часа
+    scheduler.add_job(
+        func=safe_extend_users_sub,
+        args=[test_bot],
+        trigger="interval",
+        hours=3,
+        max_instances=1,
+        misfire_grace_time=300,  # 5 минут
+        coalesce=True,
+        replace_existing=True,
+        next_run_time=dt.now()
+    )
+
+
     # Листенер ошибок в задачах
     scheduler.add_listener(job_error_listener, EVENT_JOB_ERROR)
+    scheduler.add_listener(scheduler_shutdown_listener, EVENT_SCHEDULER_SHUTDOWN)
+    scheduler.add_listener(scheduler_paused_listener, EVENT_SCHEDULER_PAUSED)
     # Листенер неожиданного shutdown
-    scheduler.add_listener(lambda e: logger.warning("Scheduler shutdown"), EVENT_SCHEDULER_SHUTDOWN)
-    scheduler.start()
+    try:
+        scheduler.start()
+    except Exception as e:
+        logger.log("SCHEDULER_ERROR", f"Failed to start scheduler: {traceback.format_exc()}")
+        raise
 
     # Запускаем корутину-монитор
     asyncio.create_task(monitor_scheduler())

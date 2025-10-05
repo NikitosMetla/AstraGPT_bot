@@ -55,14 +55,16 @@ async def get_day_statistic(call: types.CallbackQuery, state: FSMContext, bot: B
         finally:
             return
     payment = await create_payment(user.email, amount=price)
+    payment_message = await call.message.answer(text=f'✨Для дальнейшей работы бота нужно приобрести подписку'
+                                   f' за {price} рублей.\n\nПосле проведения платежа нажми на кнопку "Оплата произведена",'
+                                   ' чтобы подтвердить платеж')
     await operation_repository.add_operation(operation_id=payment[0], user_id=call.from_user.id, is_paid=False,
-                                                     url=payment[1], sub_type_id=sub_type_id)
+                                                     url=payment[1], sub_type_id=sub_type_id, payment_message_id=payment_message.message_id)
     operation = await operation_repository.get_operation_by_operation_id(payment[0])
     keyboard = await keyboard_for_pay(operation_id=operation.id, url=payment[1], time_limit=30,
                                       type_sub_id=sub_type_id)
-    await call.message.answer(text=f'Для дальнейше работы бота нужно приобрести подписку'
-                                 f' за {price} рублей.\n\nПосле проведения платежа нажми на кнопку "Оплата произведена",'
-                                 ' чтобы подтвердить платеж', reply_markup=keyboard.as_markup())
+    await payment_message.edit_reply_markup(reply_markup=keyboard.as_markup())
+
     try:
         await call.message.delete()
     finally:
@@ -82,14 +84,15 @@ async def enter_user_email(message: types.Message, state: FSMContext, bot: Bot):
         delete_message = await message.answer("Отлично, мы сохранили твой email для следующих покупок")
         user = await users_repository.get_user_by_user_id(message.from_user.id)
         payment = await create_payment(user.email, amount=price)
+        payment_message = await message.answer(text=f'✨Для дальнейшей работы ассистента нужно приобрести подписку'
+                                  f' за {price} рублей.\n\nПосле проведения платежа нажми на кнопку "Оплата произведена",'
+                                  ' чтобы подтвердить платеж')
         await operation_repository.add_operation(operation_id=payment[0], user_id=message.from_user.id, is_paid=False,
-                                                 url=payment[1], sub_type_id=type_sub_id)
+                                                 url=payment[1], sub_type_id=type_sub_id, payment_message_id=payment_message.message_id)
         operation = await operation_repository.get_operation_by_operation_id(payment[0])
         keyboard = await keyboard_for_pay(operation_id=operation.id, url=payment[1], time_limit=30,
                                           type_sub_id=type_sub_id)
-        await message.answer(text=f'Для дальнейше работы ассистента нужно приобрести подписку'
-                                       f' за {price} рублей.\n\nПосле проведения платежа нажми на кнопку "Оплата произведена",'
-                                       ' чтобы подтвердить платеж', reply_markup=keyboard.as_markup())
+        await payment_message.edit_reply_markup(reply_markup=keyboard.as_markup())
         try:
             del_message_id = int(data.get("del_message_id"))
             await bot.delete_message(chat_id=message.from_user.id, message_id=del_message_id)
@@ -168,13 +171,15 @@ async def buy_generations_callback(call: types.CallbackQuery):
     price = generations_packet.price
     user = await users_repository.get_user_by_user_id(user_id=call.from_user.id)
     payment = await create_payment(user.email, amount=price, description="Покупка дополнительных генераций фото")
+    payment_message = await call.message.answer(
+        text=f'✨Для дальнейшей работы бота нужно приобрести {generations} дополнительных генераций'
+             f' за {price} рублей.\n\nПосле проведения платежа нажми на кнопку "Оплата произведена",'
+             ' чтобы подтвердить платеж')
     await operation_repository.add_operation(operation_id=payment[0], user_id=call.from_user.id, is_paid=False,
-                                             url=payment[1])
+                                             url=payment[1], generations_pack_id=generations_packet.id, type_operation="generations_operation")
     operation = await operation_repository.get_operation_by_operation_id(payment[0])
     keyboard = await keyboard_for_pay_generations(operation_id=operation.id, url=payment[1], generations=generations)
-    await call.message.answer(text=f'✨Для дальнейшей работы бота нужно приобрести {generations} дополнительных генераций'
-                                   f' за {price} рублей.\n\nПосле проведения платежа нажми на кнопку "Оплата произведена",'
-                                   ' чтобы подтвердить платеж', reply_markup=keyboard.as_markup())
+    await payment_message.edit_reply_markup(reply_markup=keyboard.as_markup())
     try:
         await call.message.delete()
     finally:

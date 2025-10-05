@@ -80,7 +80,7 @@ class CombinedMiddleware(BaseMiddleware):
                     await asyncio.sleep(1)
                     await users_repository.add_user(user_id=user_id, username=event.from_user.username)
                     await subscriptions_repository.add_subscription(type_sub_id=2, user_id=user_id,
-                                                                    photo_generations=1, time_limit_subscription=30)
+                                                                    photo_generations=1, time_limit_subscription=30, is_paid_sub=False)
                     logger.log("JOIN", f"{user_id} | @{event.from_user.username}")
                     self.log(f"New user registered: user_id={user_id}, username=@{event.from_user.username}")
 
@@ -88,7 +88,7 @@ class CombinedMiddleware(BaseMiddleware):
                 if user_sub is None:
                     await asyncio.sleep(1)
                     await subscriptions_repository.add_subscription(type_sub_id=2, user_id=user_id,
-                                                                    photo_generations=1, time_limit_subscription=30)
+                                                                    photo_generations=1, time_limit_subscription=30, is_paid_sub=False)
                 # Предыдущее состояние пользователя в хранилище
                 check = self.storage.get(user_id)
 

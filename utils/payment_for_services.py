@@ -17,10 +17,12 @@ async def create_payment(email: str,
                          return_url: str = "https://t.me/astra_gptbot"):
     try:
         payment = Payment.create({
+            "save_payment_method": True,
             "amount": {
                 "value": str(amount),
                 "currency": currency
             },
+
             "confirmation": {
                 "type": "redirect",
                 "return_url": return_url
@@ -71,8 +73,7 @@ def create_recurring_payment(method_id: str,
         "capture": True,
         "description": description
     })
-    print(payment.status)
-    return payment.status == 'succeeded'
+    return payment
 
 
 def get_payment(payment_id):

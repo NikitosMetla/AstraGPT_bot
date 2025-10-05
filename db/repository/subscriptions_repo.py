@@ -14,14 +14,14 @@ class SubscriptionsRepository:
         self.session_maker = DatabaseEngine().create_session()
 
     async def add_subscription(self, type_sub_id: int, photo_generations: int, user_id: int, time_limit_subscription: int, active: bool = True,
-                               method_id: str | None = None) -> bool:
+                               method_id: str | None = None, is_paid_sub: bool | None = True) -> bool:
 
         async with self.session_maker() as session:
             session: AsyncSession
             async with session.begin():
                 sub = Subscriptions(user_id=user_id, time_limit_subscription=time_limit_subscription,
                                      active=active, type_subscription_id=type_sub_id, method_id=method_id,
-                                     photo_generations=photo_generations)
+                                     photo_generations=photo_generations, is_paid_sub=is_paid_sub)
                 await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": user_id})
 
                 # ❷ На время блокировки никто другой не создаст дубль
@@ -47,6 +47,7 @@ class SubscriptionsRepository:
         active: bool,
         method_id: Optional[str] = None,
         user_id: Optional[int] = None,
+        is_paid_sub: bool | None = True
     ) -> None:
         """
         Полностью перезаписывает параметры подписки с заданным id.
@@ -62,6 +63,7 @@ class SubscriptionsRepository:
                     Subscriptions.active: active,
                     Subscriptions.method_id: method_id,
                     Subscriptions.last_billing_date: datetime.now(),
+                    Subscriptions.is_paid_sub: is_paid_sub
                 }
                 # Опциональные поля — только если заданы
                 if user_id is not None:

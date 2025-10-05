@@ -21,6 +21,7 @@ class Subscriptions(BaseModel, CleanModel):
     method_id = Column(String, nullable=True, unique=False)
     photo_generations = Column(BigInteger, nullable=False, default=0)
     last_billing_date = Column(DateTime, nullable=False, default=func.now())
+    is_paid_sub = Column(Boolean, nullable=False, default=True)
 
     @property
     def stats(self) -> str:

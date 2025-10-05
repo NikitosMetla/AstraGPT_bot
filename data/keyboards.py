@@ -19,11 +19,10 @@ table_names = [
 #     return keyboard
 
 admin_kb = [
-        [KeyboardButton(text='Статистика')],
-        [KeyboardButton(text='Выгрузка таблиц')],
+        [KeyboardButton(text='Статистика'), KeyboardButton(text='Выгрузка таблиц')],
+        [KeyboardButton(text="Сгенерировать промокод"), KeyboardButton(text="Таблица с пойзона")],
         [KeyboardButton(text="Сделать рассылку")],
-        [KeyboardButton(text="Добавить / удалить админа")],
-        [KeyboardButton(text="Сгенерировать промокод")]
+        [KeyboardButton(text="Добавить / удалить админа")]
     ]
 admin_keyboard = ReplyKeyboardMarkup(keyboard=admin_kb, resize_keyboard=True)
 

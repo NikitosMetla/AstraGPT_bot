@@ -17,8 +17,9 @@ from data.keyboards import profiles_keyboard, cancel_keyboard, settings_keyboard
 from db.repository import users_repository, ai_requests_repository, subscriptions_repository, \
     type_subscriptions_repository, notifications_repository, referral_system_repository, promo_activations_repository, \
     dialogs_messages_repository
-from settings import InputMessage, photos_pages, OPENAI_ALLOWED_DOC_EXTS, get_current_assistant, sub_text, gemini_images_client
-from utils.combined_gpt_tools import NoSubscription, NoGenerations
+from settings import InputMessage, photos_pages, OPENAI_ALLOWED_DOC_EXTS, get_current_assistant, sub_text, \
+    gemini_images_client, SUPPORTED_TEXT_FILE_TYPES
+from utils.completions_gpt_tools import NoSubscription, NoGenerations
 from utils.is_subscriber import is_subscriber, is_channel_subscriber
 from utils.paginator import MechanicsPaginator
 from utils.parse_gpt_text import split_telegram_html, sanitize_with_links
@@ -151,7 +152,8 @@ async def route_enter_promocode(message: Message, state: FSMContext, bot: Bot):
         await subscriptions_repository.add_subscription(user_id=user_id,
                                                         time_limit_subscription=promo.days_sub,
                                                         photo_generations=promo.max_generations,
-                                                        type_sub_id=promo_sub_type.id
+                                                        type_sub_id=promo_sub_type.id,
+                                                        is_paid_sub=False
                                                         )
         end_date = datetime.now() + timedelta(days=promo.days_sub)
         text = f"✅ Теперь у тебя есть <b>подписка</b>! Подписка действует до {end_date.strftime('%d.%m.%y, %H:%M')} (GMT+3)"
@@ -163,6 +165,8 @@ async def route_enter_promocode(message: Message, state: FSMContext, bot: Bot):
         end_date = activate_user_sub.last_billing_date + timedelta(days=activate_user_sub.time_limit_subscription + promo.days_sub)
         text = f"✅ К текущему плану тебе добавили <b>{timedelta(days=promo.days_sub).days} дней</b>! Подписка действует до {end_date.strftime('%d.%m.%y, %H:%M')} (GMT+3)"
     await message.answer(text=text)
+    from settings import logger
+    logger.log("PROMO_ACTIVATED", f"✅ USER {user_id} | {user.username} ACTIVATE PROMO: {promo.id} | {promo.promo_code}")
 
 
 
@@ -304,7 +308,7 @@ async def send_user_message(message: Message, state: FSMContext, bot: Bot):
     type_sub = await type_subscriptions_repository.get_type_subscription_by_id(type_id=user_sub.type_subscription_id)
     date_now = datetime.now().date()
     days_left = user_sub.last_billing_date.date() + timedelta(days=user_sub.time_limit_subscription) - date_now
-    await message.answer(f'👤 Твой профиль\n\n✓ Подписка: {type_sub.plan_name}\nДней до окончания через:'
+    await message.answer(f'👤 Твой профиль\n\n✓ Подписка: {type_sub.plan_name}\nДней до окончания:'
                          f' {days_left.days if type_sub.plan_name != "Free" else "Без ограничений"}\n'
                          f'✓ Доступ: {"Полный ко всем функциям" if type_sub.plan_name != "Free" else "Базовое общение с агентом"}'
                          f'\n\n✨ Персонализация\nХочешь идеальные ответы? Расскажи о себе в '
@@ -589,7 +593,6 @@ async def standard_message_voice_handler(message: Message, state: FSMContext, bo
 )
 @media_group_handler
 @is_channel_subscriber
-@is_subscriber
 async def handle_document_album(messages: list[types.Message],  state: FSMContext, bot: Bot,):
     await state.clear()
     first = messages[-1]
@@ -601,20 +604,7 @@ async def handle_document_album(messages: list[types.Message],  state: FSMContex
     doc_buffers: list[tuple[io.BytesIO, str, str]] = []
     file_ids: list[str] = []
 
-    for msg in messages:
-        buf = io.BytesIO()
-        await bot.download(msg.document, destination=buf)
-        file_name = msg.document.file_name
-        # print(file_name)
-        ext = file_name.split('.')[-1].lower()
-        if ext not in OPENAI_ALLOWED_DOC_EXTS:
-            await first.reply(
-                f"⚠️ Формат файла «{msg.document.file_name}» не поддерживается. "
-                f"Пришлите один из форматов: {', '.join(sorted(OPENAI_ALLOWED_DOC_EXTS))}"
-            )
-            return
-        doc_buffers.append((buf, file_name, ext))
-        file_ids.append(msg.document.file_id)
+
     if any(message.document.file_name.split('.')[-1].lower() in ['jpg', 'jpeg', 'png', "DNG", "gif", "dng"] for message in messages):
         try:
             ai_answer = await get_current_assistant().send_message(
@@ -630,6 +620,20 @@ async def handle_document_album(messages: list[types.Message],  state: FSMContex
         except NoGenerations:
             return
     else:
+        for msg in messages:
+            buf = io.BytesIO()
+            await bot.download(msg.document, destination=buf)
+            file_name = msg.document.file_name
+            # print(file_name)
+            ext = file_name.split('.')[-1].lower()
+            if ext not in SUPPORTED_TEXT_FILE_TYPES:
+                await first.reply(
+                    f"⚠️ Формат файла «{msg.document.file_name}» не поддерживается. "
+                    f"Пришлите один из форматов: {', '.join(sorted(SUPPORTED_TEXT_FILE_TYPES))}"
+                )
+                return
+            doc_buffers.append((buf, file_name, ext))
+            file_ids.append(msg.document.file_id)
         try:
             ai_answer = await get_current_assistant().send_message(
                 user_id=user_id,
@@ -675,12 +679,7 @@ async def standard_message_document_handler(message: Message, state: FSMContext,
 
         file_name = message.document.file_name
         ext = file_name.split('.')[-1].lower()
-        if ext not in OPENAI_ALLOWED_DOC_EXTS:
-            await message.reply(
-                f"⚠️ Формат файла «{message.document.file_name}» не поддерживается. "
-                f"Пришлите один из форматов: {', '.join(sorted(OPENAI_ALLOWED_DOC_EXTS))}"
-            )
-            return
+
         # print("slkdjfslkdjfklsdf")
         if message.document.file_name:
             # Получаем расширение из имени файла
@@ -698,6 +697,12 @@ async def standard_message_document_handler(message: Message, state: FSMContext,
                 except NoGenerations:
                     return
             else:
+                if ext not in SUPPORTED_TEXT_FILE_TYPES:
+                    await message.reply(
+                        f"⚠️ Формат файла «{message.document.file_name}» не поддерживается. "
+                        f"Пришлите один из форматов: {', '.join(sorted(SUPPORTED_TEXT_FILE_TYPES))}"
+                    )
+                    return
                 try:
                     ai_answer = await get_current_assistant().send_message(user_id=user_id,
                                                                  thread_id=user.standard_ai_threat_id,

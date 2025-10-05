@@ -12,6 +12,54 @@ from utils.payment_for_services import create_recurring_payment
 
 scheduler: AsyncIOScheduler | None = None
 
+import asyncio
+import traceback
+# from datetime import datetime
+from apscheduler.events import (
+    EVENT_JOB_EXECUTED,
+    EVENT_JOB_ERROR,
+    EVENT_JOB_MISSED,
+    EVENT_SCHEDULER_SHUTDOWN,
+    EVENT_SCHEDULER_PAUSED,
+    JobExecutionEvent
+)
+
+
+def job_error_listener(event: JobExecutionEvent):
+    """Обработка ошибок в задачах"""
+    from settings import logger
+
+    error_msg = f"Job '{event.job_id}' failed with exception:\n{event.exception}\n{event.traceback}"
+    logger.log("SCHEDULER_ERROR", error_msg)
+
+    # Опционально: уведомление админов о критических ошибках
+    # asyncio.create_task(notify_admins_about_error(event))
+
+
+def scheduler_shutdown_listener(event):
+    """Обработка остановки планировщика"""
+    from settings import logger
+    logger.log("SCHEDULER_ERROR", f"Scheduler shutdown at {datetime.now()}")
+
+
+def scheduler_paused_listener(event):
+    """Обработка паузы планировщика"""
+    from settings import logger
+    logger.log("SCHEDULER_ERROR", f"Scheduler paused at {datetime.now()}")
+
+
+async def monitor_scheduler():
+    """
+    Мониторинг работы планировщика
+    """
+    from settings import logger
+
+    while True:
+        try:
+            await asyncio.sleep(3600)  # Каждый час
+        except Exception as e:
+            logger.log("SCHEDULER_ERROR", f"Monitor error: {traceback.format_exc()}")
+
 
 async def safe_send_notif(bot: Bot):
     from settings import logger
@@ -23,28 +71,6 @@ async def safe_send_notif(bot: Bot):
         await send_notif(bot)
     except Exception:
         logger.exception("Ошибка в send_notif")
-
-def job_error_listener(event):
-    from settings import logger
-    """
-    Листенер для ошибок внутри задач.
-    """
-    logger.error(f"Job {event.job_id} failed: {event.exception}")
-
-async def monitor_scheduler():
-    from settings import logger
-    """
-    Периодически проверяем, что scheduler.running==True, иначе перезапускаем.
-    """
-    global scheduler
-    while True:
-        await asyncio.sleep(300)  # проверять каждые 10 секунд
-        if scheduler and not scheduler.running:
-            logger.warning("Scheduler is not running — перезапускаем")
-            try:
-                scheduler.start()
-            except Exception:
-                logger.exception("Не удалось перезапустить scheduler")
 
 
 async def send_notif(bot: Bot):
@@ -69,41 +95,64 @@ async def send_notif(bot: Bot):
             continue
 
 
+async def safe_extend_users_sub(main_bot: Bot):
+    from settings import logger
+    try:
+        await extend_users_sub(main_bot=main_bot)
+    except:
+        logger.log("SCHEDULER_ERROR", f"safe_extend_users_sub error: {traceback.format_exc()}")
+
 #
 async def extend_users_sub(main_bot: Bot):
     from settings import logger
     users_subs = await subscriptions_repository.select_all_active_subscriptions()
     now_datetime = datetime.datetime.now()
+    extended_subs = 0
     for sub in users_subs:
-        type_sub = await type_subscriptions_repository.get_type_subscription_by_id(type_id=sub.type_subscription_id)
-        if sub is not None and type_sub.plan_name != "Free":
-            try:
-                if sub.method_id is None:
-                    await subscriptions_repository.deactivate_subscription(subscription_id=sub.id)
+        if (sub.last_billing_date + datetime.timedelta(days=sub.time_limit_subscription)) <= now_datetime:
+            type_sub = await type_subscriptions_repository.get_type_subscription_by_id(type_id=sub.type_subscription_id)
+            if sub is not None and sub.is_paid_sub:
+                try:
+                    if sub.method_id is None:
+                        await subscriptions_repository.deactivate_subscription(subscription_id=sub.id)
+                        await main_bot.send_message(chat_id=sub.user_id,
+                                                    text="Дорогой друг, не получилось автоматически продлить твою подписку."
+                                                     " Если ты видишь, что при этом у тебя"
+                                                     " списались деньги - обязательно пиши нашу поддержку по команде /support")
+                        continue
+
+                    payment = create_recurring_payment(method_id=sub.method_id,
+                                                      amount=type_sub.price)
+                    if payment.status == 'succeeded':
+                        # try:
+                        max_generations = type_sub.max_generations
+                        await subscriptions_repository.replace_subscription(subscription_id=sub.id,
+                                                                            user_id=sub.user_id,
+                                                                            time_limit_subscription=30,
+                                                                            active=True,
+                                                                            type_sub_id=type_sub.id,
+                                                                            method_id=sub.method_id,
+                                                                            photo_generations=max_generations)
+
+                        await main_bot.send_message(chat_id=sub.user_id,
+                                                    text="🚀Дорогой друг, твоя подписка автоматически продлена на один месяц")
+                        extended_subs += 1
+                    else:
+                        logger.log("EXTEND_SUB_ERROR", f"payment_data - {payment.json()}")
+                        await main_bot.send_message(chat_id=sub.user_id,
+                                                    text="Дорогой друг, не получилось автоматически продлить твою подписку."
+                                                         " Если ты видишь, что при этом у тебя"
+                                                         " списались деньги - обязательно пиши нашу поддержку по команде /support")
+                except:
+                    logger.log("EXTEND_SUB_ERROR", traceback.format_exc())
                     await main_bot.send_message(chat_id=sub.user_id,
                                                 text="Дорогой друг, не получилось автоматически продлить твою подписку."
                                                      " Если ты видишь, что при этом у тебя"
-                                                     " списались деньги - обязательно пиши нашу поддержку @sozdav_ai")
-                    continue
+                                                     " списались деньги - обязательно пиши нашу поддержку по команде /support")
+            else:
+                try:
+                    await subscriptions_repository.update_time_limit_subscription(subscription_id=sub.id, new_time_limit=30)
+                except:
+                    logger.log("EXTEND_SUB_ERROR", traceback.format_exc())
+    logger.log("SCHEDULER_INFO", f"🚀SCHEDULER extended_subs - {extended_subs}")
 
-                result = create_recurring_payment(method_id=sub.method_id,
-                                                  amount=type_sub.price)
-                if result:
-                    # try:
-                    max_generations = type_sub.max_generations
-                    await subscriptions_repository.replace_subscription(subscription_id=sub.id,
-                                                                        user_id=sub.user_id,
-                                                                        time_limit_subscription=30,
-                                                                        active=True,
-                                                                        type_sub_id=type_sub.id,
-                                                                        method_id=sub.method_id,
-                                                                        photo_generations=max_generations)
-
-                    await main_bot.send_message(chat_id=sub.user_id,
-                                                text="Дорогой друг, твоя подписка автоматически продлена на один месяц")
-            except:
-                logger.log("EXTEND_SUB_ERROR", traceback.format_exc())
-                await main_bot.send_message(chat_id=sub.user_id,
-                                            text="Дорогой друг, не получилось автоматически продлить твою подписку."
-                                                 " Если ты видишь, что при этом у тебя"
-                                                 " списались деньги - обязательно пиши нашу поддержку по команде /support")

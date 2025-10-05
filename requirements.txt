@@ -9,3 +9,18 @@ agents
 asyncpg
 greenlet
 pytz~=2023.3
+# Обработка PDF
+PyPDF2==3.0.1
+
+# Обработка DOCX
+python-docx==1.1.0
+
+# Обработка XLSX
+openpyxl==3.1.2
+
+# Семантический поиск
+sentence-transformers==2.2.2
+faiss-cpu==1.7.4  # Используйте faiss-gpu если есть CUDA
+
+# Для работы с NumPy (если ещё не установлен)
+numpy>=1.21.0

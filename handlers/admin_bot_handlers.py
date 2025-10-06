@@ -37,9 +37,10 @@ async def send_promo_table(message: types.Message, state: FSMContext, bot: Bot):
     await message.answer("Отправьте excel таблицу с промокодами", reply_markup=cancel_keyboard.as_markup())
     await state.set_state(InputMessage.send_excel_promo)
 
-@admin_router.message(F.document, any_state)
+@admin_router.message(F.document, InputMessage.send_excel_promo)
 async def get_promo_table(message: types.Message, state: FSMContext, bot: Bot):
     try:
+        await state.clear()
         file_buffer = io.BytesIO()
         if "." + message.document.file_name.split(".")[-1] not in EXCEL_EXTENSIONS:
             await message.answer("Неправильный тип файла, убедись, что ты отправляешь excel таблицу")
@@ -74,6 +75,7 @@ async def get_promo_table(message: types.Message, state: FSMContext, bot: Bot):
         from settings import logger
         logger.log("ERROR_HANDLER", "Error in promo file\n\n" + traceback.format_exc())
         await message.answer("Произошла ошибка, проверь корректность файла")
+
 
 
 @admin_router.callback_query(F.data.startswith("db_tables|"), any_state)

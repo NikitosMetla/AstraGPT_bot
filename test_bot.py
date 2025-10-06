@@ -1,27 +1,24 @@
 import asyncio
 import datetime
 import traceback
+from datetime import datetime as dt
 
 from aiogram import Dispatcher, Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_SCHEDULER_SHUTDOWN, EVENT_SCHEDULER_PAUSED
-from datetime import datetime as dt
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from db.engine import DatabaseEngine
 from handlers.payment_handler import payment_router
 from handlers.try_on_handler import try_on_router
 from handlers.user_handler import standard_router
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
-
-
 from settings import (
-    storage_bot, test_bot_token, set_current_bot, set_current_assistant, 
-    initialize_logger, set_current_loop, logger
+    storage_bot, test_bot_token, set_current_bot, set_current_assistant,
+    initialize_logger, set_current_loop, logger, on_startup, on_shutdown
 )
-from utils.schedulers import send_notif, safe_send_notif, job_error_listener, scheduler, monitor_scheduler, \
-    extend_users_sub, scheduler_shutdown_listener, scheduler_paused_listener, safe_extend_users_sub
+from utils.schedulers import safe_send_notif, job_error_listener, monitor_scheduler, \
+    scheduler_shutdown_listener, scheduler_paused_listener, safe_extend_users_sub
 
 test_bot = Bot(token=test_bot_token,
                default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -42,6 +39,8 @@ async def main():
     await test_bot.delete_webhook(drop_pending_updates=True)
 
     dp = Dispatcher(storage=storage_bot)
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
     from utils.message_throttling import CombinedMiddleware
     dp.message.middleware.register(CombinedMiddleware())
     dp.include_routers(try_on_router, payment_router, standard_router)

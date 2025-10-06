@@ -107,6 +107,7 @@ db_tables_keyboard.row(InlineKeyboardButton(text="Отмена", callback_data="
 
 
 statistics_keyboard = InlineKeyboardBuilder()
+statistics_keyboard.row(InlineKeyboardButton(text="Grafana", web_app=WebAppInfo(url="https://grafana.astrabot.tech/d/ad7whs7/sozdavai-bot")))
 statistics_keyboard.row(InlineKeyboardButton(text="Количество активных пользователей", callback_data="statistics|active_users"))
 statistics_keyboard.row(InlineKeyboardButton(text="Количество новых пользователей", callback_data="statistics|users"))
 statistics_keyboard.row(InlineKeyboardButton(text="Количество пользователей с активной подпиской", callback_data="statistics|active_subs"))

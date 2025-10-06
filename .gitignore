@@ -3,3 +3,5 @@
 __pycache__/
 *.py[cod]
 astrabot.tech
+.DS_Store
+.idea

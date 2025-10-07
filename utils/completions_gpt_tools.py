@@ -548,7 +548,7 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_ge
             logger.info(f"Запуск генерации видео из изображения: {args['prompt'][:100]}...")
             result = await sora_client.image_to_video(**kwargs)
             logger.info(f"Видео готово: {result}")
-            return [result]
+            return result
 
         except InsufficientCreditsError as e:
             logger.error(f"Недостаточно кредитов: {e}")

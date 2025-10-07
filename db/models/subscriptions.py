@@ -20,6 +20,7 @@ class Subscriptions(BaseModel, CleanModel):
     type_subscription_id = Column(BigInteger, ForeignKey('type_subscriptions.id'), nullable=False, unique=False)
     method_id = Column(String, nullable=True, unique=False)
     photo_generations = Column(BigInteger, nullable=False, default=0)
+    video_generations_generations = Column(BigInteger, nullable=False, default=0)
     last_billing_date = Column(DateTime, nullable=False, default=func.now())
     is_paid_sub = Column(Boolean, nullable=False, default=True)
 

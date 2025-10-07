@@ -14,13 +14,15 @@ class TypeSubscriptionsRepository:
     async def add_type_subscription(self,
                                with_voice: bool | None = False, max_generations: int | None = None,
                                with_files: bool | None = None, plan_name: str | None = None, price: int | None = None,
-                                web_search: bool | None = False, from_promo: bool | None = False) -> bool:
+                                web_search: bool | None = False, from_promo: bool | None = False,
+                                max_video_generations: int | None = None) -> bool:
         async with self.session_maker() as session:
             session: AsyncSession
             async with session.begin():
                 sub = TypeSubscriptions(with_voice=with_voice, plan_name=plan_name,
                                      with_files=with_files, max_generations=max_generations,
-                                         price=price, web_search=web_search, from_promo=from_promo)
+                                         price=price, web_search=web_search, from_promo=from_promo,
+                                        max_video_generations=max_video_generations)
                 try:
                     session.add(sub)
                 except Exception:

@@ -10,6 +10,7 @@ from .type_subscriptions_repository import TypeSubscriptionsRepository
 from .users_repo import UserRepository
 from .refferal_repo import ReferralSystemRepository
 from .promo_activations_repo import PromoActivationsRepository
+from .video_generations_packets_repo import VideoVideoGenerationsPacketsRepository
 
 users_repository = UserRepository()
 admin_repository = AdminRepository()
@@ -23,6 +24,7 @@ operation_repository = OperationRepository()
 type_subscriptions_repository = TypeSubscriptionsRepository()
 generations_packets_repository = GenerationsPacketsRepository()
 dialogs_messages_repository = DialogsMessagesRepository()
+video_generations_packets_repository = VideoVideoGenerationsPacketsRepository()
 
 __all__ = ['users_repository',
            'admin_repository',
@@ -36,4 +38,5 @@ __all__ = ['users_repository',
            'type_subscriptions_repository',
            'generations_packets_repository',
            'dialogs_messages_repository',
+           'video_generations_packets_repository',
           ]

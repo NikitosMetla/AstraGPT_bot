@@ -16,7 +16,7 @@ class ReferralSystem(BaseModel, CleanModel):
     type_promo = Column(String, nullable=False, unique=False, default="standard")
     active = Column(Boolean, nullable=False, default=True, unique=False)
     max_generations = Column(BigInteger, nullable=False)
-    max_video_generations = Column(BigInteger, nullable=False)
+    max_video_generations = Column(BigInteger, nullable=False, default=0)
     with_voice = Column(Boolean, nullable=False, default=False)
     with_files = Column(Boolean, nullable=False, default=False)
     web_search = Column(Boolean, nullable=False, default=False)

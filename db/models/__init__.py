@@ -5,7 +5,7 @@ from .events import Events
 from .generations_packets import GenerationsPackets
 from .notifications import Notifications
 from .operations import Operations
-from .reposts import Reposts
+from .video_generations_packets import VideoGenerationsPackets
 from .subscriptions import Subscriptions
 from .type_subscriptions import TypeSubscriptions
 from .users import Users
@@ -18,12 +18,13 @@ __all__ = ['Users',
            'AiRequests',
            'Operations',
            'Subscriptions',
-           'Reposts',
            'Notifications',
            'ReferralSystem',
            'PromoActivations',
            'Events',
            'TypeSubscriptions',
            'GenerationsPackets',
-           'DialogsMessages'
+           'DialogsMessages',
+           'VideoGenerationsPackets'
            ]
+

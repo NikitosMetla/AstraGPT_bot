@@ -162,7 +162,8 @@ async def handle_successful_payment(payment_id: str):
                     active=True,
                     type_sub_id=sub_type_id,
                     method_id=payment.payment_method.id if payment.payment_method else None,
-                    photo_generations=sub_type.max_generations
+                    photo_generations=sub_type.max_generations,
+                    video_generations=sub_type.max_video_generations
                 )
             else:
                 await subscriptions_repository.replace_subscription(
@@ -172,7 +173,8 @@ async def handle_successful_payment(payment_id: str):
                     active=True,
                     type_sub_id=sub_type_id,
                     method_id=payment.payment_method.id if payment.payment_method else None,
-                    photo_generations=sub_type.max_generations
+                    photo_generations=sub_type.max_generations,
+                    video_generations=sub_type.max_video_generations
                 )
 
             logger.log("YooKassaPAYMENT_SUCCES", f"✅Subscription activated for payment: {payment_id}")

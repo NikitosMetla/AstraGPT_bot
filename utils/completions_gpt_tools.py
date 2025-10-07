@@ -23,7 +23,8 @@ from openai import (
 )
 
 from settings import get_current_datetime_string, print_log, get_current_bot, gemini_images_client
-from data.keyboards import subscriptions_keyboard, more_generations_keyboard, delete_notification_keyboard
+from data.keyboards import subscriptions_keyboard, more_generations_keyboard, delete_notification_keyboard, \
+    more_video_generations_keyboard
 from utils import web_search_agent
 from utils.create_notification import (
     schedule_notification,
@@ -48,7 +49,7 @@ from db.repository import (
     subscriptions_repository,
     type_subscriptions_repository,
     generations_packets_repository,
-    notifications_repository, dialogs_messages_repository,
+    notifications_repository, dialogs_messages_repository, video_generations_packets_repository,
 )
 from db.models import DialogsMessages
 
@@ -487,27 +488,33 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_ge
             return result
 
         except InsufficientCreditsError as e:
-            logger.error(f"Недостаточно кредитов: {e}")
-            return "К сожалению, на аккаунте закончились кредиты для генерации видео. Пожалуйста, свяжитесь с администратором для пополнения баланса."
+            logger.log("Sora2Error",f"Недостаточно кредитов: {e}")
+            return ("В связи с большим наплывом пользователей"
+                     " наши сервера испытывают экстремальные нагрузки."
+                     " Скоро генерация изображений станет снова доступна,"
+                     " а пока можете воспользоваться другим функционалом."
+                     " Я умею немало 🤗")
 
         except ContentPolicyError as e:
-            logger.error(f"Нарушение content policy: {e}")
+            logger.log("Sora2Error",f"Нарушение content policy: {e}")
             return "Ваш запрос был отклонён системой безопасности. Пожалуйста, измените описание видео, убрав упоминания конкретных людей, знаменитостей или потенциально небезопасный контент, и попробуйте снова."
 
         except RateLimitError as e:
-            logger.error(f"Rate limit превышен: {e}")
+            logger.log("Sora2Error",f"Rate limit превышен: {e}")
             return "Слишком много запросов на генерацию видео. Пожалуйста, подождите 1-2 минуты и попробуйте снова."
 
         except asyncio.TimeoutError:
-            logger.error("Таймаут генерации видео")
+            logger.log("Sora2Error","Таймаут генерации видео")
             return "Генерация видео заняла слишком много времени (более 15 минут) и была прервана. Попробуйте упростить описание или выбрать качество 'standard' вместо 'hd'."
 
         except KieSora2Error as e:
             error_msg = str(e)
-            logger.error(f"Ошибка Sora API: {error_msg}")
+            logger.log("Sora2Error", f"Ошибка Sora API: {error_msg}")
 
             if "Эндпоинт не найден" in error_msg:
-                return "Произошла техническая ошибка с API генерации видео. Сервис временно недоступен, попробуйте позже."
+                return "Сервис временно недоступен, попробуйте позже."
+            elif "Ошибка генерации" in error_msg:
+                return "Дорогой друг. На данный момент модель не может генерировать видео знаменитостей, а также непристойный контент. Если ты считаешь, что проблема в другом, то обратись в поддержку /support"
             elif "Неверный API ключ" in error_msg:
                 return "Ошибка аутентификации с сервисом генерации видео. Пожалуйста, свяжитесь с администратором."
             elif "Ошибка валидации" in error_msg:
@@ -551,31 +558,37 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_ge
             return result
 
         except InsufficientCreditsError as e:
-            logger.error(f"Недостаточно кредитов: {e}")
-            return "К сожалению, на аккаунте закончились кредиты для генерации видео. Пожалуйста, свяжитесь с администратором для пополнения баланса."
+            logger.log("Sora2Error",f"Недостаточно кредитов: {e}")
+            return ("В связи с большим наплывом пользователей"
+                    " наши сервера испытывают экстремальные нагрузки."
+                    " Скоро генерация изображений станет снова доступна,"
+                    " а пока можете воспользоваться другим функционалом."
+                    " Я умею немало 🤗")
 
         except ContentPolicyError as e:
-            logger.error(f"Нарушение content policy: {e}")
+            logger.log("Sora2Error",f"Нарушение content policy: {e}")
             return "Ваше изображение или запрос были отклонены системой безопасности. Убедитесь, что на фото нет узнаваемых лиц знаменитостей или несовершеннолетних, и описание не содержит небезопасный контент."
 
         except RateLimitError as e:
-            logger.error(f"Rate limit превышен: {e}")
+            logger.log("Sora2Error",f"Rate limit превышен: {e}")
             return "Слишком много запросов на генерацию видео. Пожалуйста, подождите 1-2 минуты и попробуйте снова."
 
         except asyncio.TimeoutError:
-            logger.error("Таймаут генерации видео")
+            logger.log("Sora2Error","Таймаут генерации видео")
             return "Генерация видео заняла слишком много времени (более 15 минут) и была прервана. Попробуйте упростить описание анимации или выбрать качество 'standard' вместо 'hd'."
 
         except KieSora2Error as e:
             error_msg = str(e)
-            logger.error(f"Ошибка Sora API: {error_msg}")
+            logger.log("Sora2Error",f"Ошибка Sora API: {error_msg}")
 
             if "Файл не найден" in error_msg:
                 return "Не удалось получить доступ к изображению. Пожалуйста, отправьте изображение заново."
+            elif "Ошибка генерации" in error_msg:
+                return "Дорогой друг. На данный момент модель не может генерировать видео на основе фото живых людей, знаменитостей, а также непристойный контент. Если ты считаешь, что проблема в другом, то обратись в поддержку /support"
             elif "image должен быть" in error_msg:
                 return "Некорректный формат изображения. Пожалуйста, отправьте изображение в формате JPEG, PNG или WEBP размером до 10 МБ."
             elif "Эндпоинт не найден" in error_msg:
-                return "Произошла техническая ошибка с API генерации видео. Сервис временно недоступен, попробуйте позже."
+                return "Сервис временно недоступен, попробуйте позже."
             elif "Неверный API ключ" in error_msg:
                 return "Ошибка аутентификации с сервисом генерации видео. Пожалуйста, свяжитесь с администратором."
             elif "Сервис недоступен" in error_msg or "maintenance" in error_msg.lower():
@@ -584,8 +597,8 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_ge
                 return f"Не удалось сгенерировать видео из изображения: {error_msg}. Попробуйте другое изображение или повторите попытку позже."
 
         except Exception as e:
-            logger.error(f"Неожиданная ошибка при генерации видео из изображения: {traceback.format_exc()}")
-            return "Произошла непредвиденная ошибка при генерации видео. Пожалуйста, попробуйте ещё раз через несколько минут или обратитесь в поддержку."
+            logger.log("Sora2Error",f"Неожиданная ошибка при генерации видео из изображения: {traceback.format_exc()}")
+            return "Произошла непредвиденная ошибка при генерации видео. Пожалуйста, попробуйте ещё раз через несколько минут или обратитесь в поддержку /support."
 
 
     # if name == "fitting_clothes":
@@ -704,8 +717,14 @@ async def run_tools_and_followup_chat(
             fname = tc["function"]["name"]
             tool_id = tc.get("id") or ""
             # Проверки подписки/лимитов и индикаторы
-            if fname not in ("search_web", "add_notification" ,"generate_text_to_video", "generate_image_to_video"):
+            if fname not in ("search_web", "add_notification"):
                 if user_sub is None or (type_sub is not None and type_sub.plan_name == "Free"):
+                    if user_sub is None:
+                        await subscriptions_repository.add_subscription(type_sub_id=2, user_id=user_id,
+                                                                        photo_generations=0, time_limit_subscription=30,
+                                                                        is_paid_sub=False,
+                                                                        video_generations=0)
+                        user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user_id)
                     await main_bot.send_message(
                         chat_id=user.user_id,
                         text="🚨 Эта функция доступна только по подписке\n\n" + sub_text,
@@ -720,45 +739,80 @@ async def run_tools_and_followup_chat(
                         outputs_messages=outputs_messages,
                     )
                     raise NoSubscription(f"User {user.user_id} dont has active subscription")
-
-                if user_sub.photo_generations <= 0:
-                    generations_packets = await generations_packets_repository.select_all_generations_packets()
-                    from settings import buy_generations_text
-                    if type_sub and type_sub.plan_name == "Free":
+                if fname in ("generate_text_to_video", "generate_image_to_video"):
+                    if user_sub.video_generations <= 0:
+                        from settings import buy_video_generations_text
+                        video_generations_packets = await video_generations_packets_repository.select_all_video_generations_packets()
+                        if type_sub is not None and type_sub.plan_name == "Free":
+                            await main_bot.send_message(
+                                chat_id=user.user_id,
+                                text="🚨 Эта функция доступна только по подписке\n\n" + sub_text,
+                                reply_markup=subscriptions_keyboard(sub_types).as_markup(),
+                            )
+                            # ДОБАВЬ ЭТО:
+                            await _append_tool_message(
+                                user_id=user.user_id,
+                                tool_call_id=tool_id,
+                                name=fname,
+                                content_obj={"error": "forbidden", "reason": "no_subscription"},
+                                outputs_messages=outputs_messages,
+                            )
+                            raise NoSubscription(f"User {user.user_id} dont has active subscription")
                         await main_bot.send_message(
-                            chat_id=user.user_id,
-                            text="🚨 Эта функция доступна только по подписке\n\n" + sub_text,
-                            reply_markup=subscriptions_keyboard(sub_types).as_markup(),
+                            chat_id=user_id,
+                            text=buy_video_generations_text,
+                            reply_markup=more_video_generations_keyboard(video_generations_packets).as_markup(),
                         )
                         # ДОБАВЬ ЭТО:
                         await _append_tool_message(
                             user_id=user.user_id,
                             tool_call_id=tool_id,
                             name=fname,
-                            content_obj={"error": "forbidden", "reason": "no_subscription"},
+                            content_obj={"error": "quota_exceeded", "reason": "no_video_generations_left"},
                             outputs_messages=outputs_messages,
                         )
-                        raise NoSubscription(f"User {user.user_id} dont has active subscription")
+                        raise NoGenerations(f"User {user.user_id} dont has generations")
+                    from settings import send_initial
+                    delete_message = await send_initial(main_bot, user_id)
+                else:
+                    if user_sub.photo_generations <= 0:
+                        generations_packets = await generations_packets_repository.select_all_generations_packets()
+                        from settings import buy_generations_text
+                        if type_sub is not None and type_sub.plan_name == "Free":
+                            await main_bot.send_message(
+                                chat_id=user.user_id,
+                                text="🚨 Эта функция доступна только по подписке\n\n" + sub_text,
+                                reply_markup=subscriptions_keyboard(sub_types).as_markup(),
+                            )
+                            # ДОБАВЬ ЭТО:
+                            await _append_tool_message(
+                                user_id=user.user_id,
+                                tool_call_id=tool_id,
+                                name=fname,
+                                content_obj={"error": "forbidden", "reason": "no_subscription"},
+                                outputs_messages=outputs_messages,
+                            )
+                            raise NoSubscription(f"User {user.user_id} dont has active subscription")
 
-                    await main_bot.send_message(
-                        chat_id=user_id,
-                        text=buy_generations_text,
-                        reply_markup=more_generations_keyboard(generations_packets).as_markup(),
-                    )
-                    # ДОБАВЬ ЭТО:
-                    await _append_tool_message(
-                        user_id=user.user_id,
-                        tool_call_id=tool_id,
-                        name=fname,
-                        content_obj={"error": "quota_exceeded", "reason": "no_generations_left"},
-                        outputs_messages=outputs_messages,
-                    )
-                    raise NoGenerations(f"User {user.user_id} dont has generations")
+                        await main_bot.send_message(
+                            chat_id=user_id,
+                            text=buy_generations_text,
+                            reply_markup=more_generations_keyboard(generations_packets).as_markup(),
+                        )
+                        # ДОБАВЬ ЭТО:
+                        await _append_tool_message(
+                            user_id=user.user_id,
+                            tool_call_id=tool_id,
+                            name=fname,
+                            content_obj={"error": "quota_exceeded", "reason": "no_generations_left"},
+                            outputs_messages=outputs_messages,
+                        )
+                        raise NoGenerations(f"User {user.user_id} dont has generations")
 
-                delete_message = await main_bot.send_message(
-                    chat_id=user.user_id,
-                    text="🎨Начал работу над изображением, немного магии…",
-                )
+                    delete_message = await main_bot.send_message(
+                        chat_id=user.user_id,
+                        text="🎨Начал работу над изображением, немного магии…",
+                    )
             else:
                 if fname == "search_web":
                     delete_message = await main_bot.send_message(
@@ -770,11 +824,6 @@ async def run_tools_and_followup_chat(
                         text="🖌Начал настраивать напоминание...",
                         chat_id=user.user_id,
                     )
-                elif fname in ["generate_text_to_video", "generate_image_to_video"]:
-                    from settings import send_initial
-                    delete_message = await send_initial(main_bot, user_id)
-                    # stop_event = asyncio.Event()
-                    # task = asyncio.create_task(animate_spinner(main_bot, delete_message, stop_event))
 
             # Исполняем инструмент
             result = await dispatch_tool_call(
@@ -810,7 +859,7 @@ async def run_tools_and_followup_chat(
                     user_id=user_id,
                     tool_call_id=tool_id,
                     name=fname,
-                    content_obj={"text": f"Generated vido url: {result[0]}"},
+                    content_obj={"text": f"Generated video url: {result[0]}"},
                     outputs_messages=outputs_messages,
                 )
                 video_urls.extend(result)
@@ -821,7 +870,7 @@ async def run_tools_and_followup_chat(
                     user_id=user_id,
                     tool_call_id=tool_id,
                     name=fname,
-                    content_obj={"text": result},
+                    content_obj=result,
                     outputs_messages=outputs_messages,
                 )
                 continue
@@ -1221,6 +1270,9 @@ class GPTCompletions:  # noqa: N801
                         # if user_sub:
                         #     await subscriptions_repository.use_generation(subscription_id=user_sub.id,
                         #                                                   count=len(final_images))
+                        if user_sub:
+                            await subscriptions_repository.use_video_generation(subscription_id=user_sub.id,
+                                                                                count=1)
                         ai_json = {
                             "type": "ai",
                             "content": "video_urls:" + ", ".join(video_urls),

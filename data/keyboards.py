@@ -67,6 +67,14 @@ def more_generations_keyboard(generations_packets: list):
                                           callback_data=f"more_generations|{generations_packet.id}"))
     return  keyboard
 
+def more_video_generations_keyboard(video_generations_packets: list):
+    keyboard = InlineKeyboardBuilder()
+    for generations_packet in video_generations_packets:
+        keyboard.row(InlineKeyboardButton(text=f"{generations_packet.generations}"
+                                               f" генераций - {generations_packet.price} ₽",
+                                          callback_data=f"more_video_generations|{generations_packet.id}"))
+    return  keyboard
+
 
 menu_button = InlineKeyboardButton(text="В меню", callback_data="start_menu")
 # buy_sub_keyboard = InlineKeyboardBuilder()
@@ -172,6 +180,13 @@ async def keyboard_for_pay_generations(operation_id: str, url: str, generations:
     pay_ai_keyboard.row(InlineKeyboardButton(text="Оплатить", web_app=WebAppInfo(url=url)))
     pay_ai_keyboard.row(InlineKeyboardButton(text="Оплата произведена",
                                              callback_data=f"generations_is_paid|{operation_id}|{generations}"))
+    return pay_ai_keyboard
+
+async def keyboard_for_pay_video_generations(operation_id: str, url: str, video_generations: int):
+    pay_ai_keyboard = InlineKeyboardBuilder()
+    pay_ai_keyboard.row(InlineKeyboardButton(text="Оплатить", web_app=WebAppInfo(url=url)))
+    pay_ai_keyboard.row(InlineKeyboardButton(text="Оплата произведена",
+                                             callback_data=f"video_generations_is_paid|{operation_id}|{video_generations}"))
     return pay_ai_keyboard
 
 

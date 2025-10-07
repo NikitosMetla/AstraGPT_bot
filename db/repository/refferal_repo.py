@@ -18,6 +18,7 @@ class ReferralSystemRepository:
                         days_sub: int = 30,
                         max_activations: int | None = None,
                         max_generations: int = 0,
+                        max_video_generations: int = 0,
                         with_voice: bool = False,
                         with_files: bool = False,
                         web_search: bool = False,
@@ -38,6 +39,7 @@ class ReferralSystemRepository:
                     with_files=with_files,
                     web_search=web_search,
                     active=active,
+                    max_video_generations=max_video_generations
                 )
                 try:
                     session.add(sql)

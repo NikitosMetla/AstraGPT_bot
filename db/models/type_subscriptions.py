@@ -14,7 +14,7 @@ class TypeSubscriptions(BaseModel, CleanModel):
     plan_name = Column(String, nullable=False , unique=True)
     price = Column(BigInteger, nullable=False)
     max_generations = Column(BigInteger, nullable=False)
-    max_video_generations = Column(BigInteger, nullable=False)
+    max_video_generations = Column(BigInteger, nullable=False, default=0)
     with_voice = Column(Boolean, nullable=False, default=False)
     with_files = Column(Boolean, nullable=False, default=False)
     web_search = Column(Boolean, nullable=False, default=False)

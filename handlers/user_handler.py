@@ -171,6 +171,7 @@ async def route_enter_promocode(message: Message, state: FSMContext, bot: Bot):
         await subscriptions_repository.add_subscription(user_id=user_id,
                                                         time_limit_subscription=promo.days_sub,
                                                         photo_generations=promo.max_generations,
+                                                        video_generations=promo.max_video_generations,
                                                         type_sub_id=promo_sub_type.id,
                                                         is_paid_sub=False
                                                         )

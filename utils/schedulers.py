@@ -108,6 +108,7 @@ async def extend_users_sub(main_bot: Bot):
     users_subs = await subscriptions_repository.select_all_active_subscriptions()
     now_datetime = datetime.datetime.now()
     extended_subs = 0
+    extended_free_subs = 0
     for sub in users_subs:
         if (sub.last_billing_date + datetime.timedelta(days=sub.time_limit_subscription)) <= now_datetime:
             type_sub = await type_subscriptions_repository.get_type_subscription_by_id(type_id=sub.type_subscription_id)
@@ -132,7 +133,8 @@ async def extend_users_sub(main_bot: Bot):
                                                                             active=True,
                                                                             type_sub_id=type_sub.id,
                                                                             method_id=sub.method_id,
-                                                                            photo_generations=max_generations)
+                                                                            photo_generations=max_generations,
+                                                                            video_generations=type_sub.max_video_generations)
 
                         await main_bot.send_message(chat_id=sub.user_id,
                                                     text="🚀Дорогой друг, твоя подписка автоматически продлена на один месяц")
@@ -151,8 +153,11 @@ async def extend_users_sub(main_bot: Bot):
                                                      " списались деньги - обязательно пиши нашу поддержку по команде /support")
             else:
                 try:
-                    await subscriptions_repository.update_time_limit_subscription(subscription_id=sub.id, new_time_limit=30)
+                    if sub is not None:
+                        await subscriptions_repository.update_time_limit_subscription(subscription_id=sub.id, new_time_limit=30)
+                        extended_free_subs += 1
                 except:
                     logger.log("EXTEND_SUB_ERROR", traceback.format_exc())
-    logger.log("SCHEDULER_INFO", f"🚀SCHEDULER extended_subs - {extended_subs}")
+    logger.log("SCHEDULER_INFO",
+               f"🚀SCHEDULER extended_subs - {extended_subs} | extended_free_subs - {extended_free_subs}")
 

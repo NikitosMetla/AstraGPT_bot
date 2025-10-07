@@ -19,6 +19,7 @@ class OperationRepository:
                             sub_type_id: int | None = None,
                             type_operation: str | None = None,
                             generations_pack_id: int | None = None,
+                            video_generations_pack_id: int | None = None,
                             payment_message_id: int | None = None,
                             ) -> bool:
         """
@@ -37,7 +38,8 @@ class OperationRepository:
                 sql = Operations(user_id=user_id, operation_id=operation_id, is_paid=is_paid, url=url,
                                  sub_type_id=sub_type_id, type_operation=type_operation,
                                  generations_pack_id=generations_pack_id,
-                                 payment_message_id=payment_message_id)
+                                 payment_message_id=payment_message_id,
+                                 video_generations_pack_id=video_generations_pack_id)
                 try:
                     session.add(sql)
                 except Exception:

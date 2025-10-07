@@ -13,7 +13,8 @@ class SubscriptionsRepository:
     def __init__(self):
         self.session_maker = DatabaseEngine().create_session()
 
-    async def add_subscription(self, type_sub_id: int, photo_generations: int, user_id: int, time_limit_subscription: int, active: bool = True,
+    async def add_subscription(self, type_sub_id: int, photo_generations: int, video_generations: int,
+                               user_id: int, time_limit_subscription: int, active: bool = True,
                                method_id: str | None = None, is_paid_sub: bool | None = True) -> bool:
 
         async with self.session_maker() as session:
@@ -21,7 +22,7 @@ class SubscriptionsRepository:
             async with session.begin():
                 sub = Subscriptions(user_id=user_id, time_limit_subscription=time_limit_subscription,
                                      active=active, type_subscription_id=type_sub_id, method_id=method_id,
-                                     photo_generations=photo_generations, is_paid_sub=is_paid_sub)
+                                     photo_generations=photo_generations, is_paid_sub=is_paid_sub, video_generations=video_generations)
                 await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": user_id})
 
                 # ❷ На время блокировки никто другой не создаст дубль
@@ -43,6 +44,7 @@ class SubscriptionsRepository:
         *,
         type_sub_id: int,
         photo_generations: int,
+        video_generations: int,
         time_limit_subscription: int,
         active: bool,
         method_id: Optional[str] = None,
@@ -63,7 +65,8 @@ class SubscriptionsRepository:
                     Subscriptions.active: active,
                     Subscriptions.method_id: method_id,
                     Subscriptions.last_billing_date: datetime.now(),
-                    Subscriptions.is_paid_sub: is_paid_sub
+                    Subscriptions.is_paid_sub: is_paid_sub,
+                    Subscriptions.video_generations: video_generations
                 }
                 # Опциональные поля — только если заданы
                 if user_id is not None:
@@ -148,12 +151,32 @@ class SubscriptionsRepository:
                 await session.execute(sql)
                 await session.commit()
 
+    async def update_video_generations(self, subscription_id: int, new_video_generations: int):
+        async with self.session_maker() as session:
+            session: AsyncSession
+            async with session.begin():
+                sql = update(Subscriptions).values({
+                    Subscriptions.photo_generations: Subscriptions.video_generations + new_video_generations
+                }).where(or_(Subscriptions.id == subscription_id))
+                await session.execute(sql)
+                await session.commit()
+
     async def use_generation(self, subscription_id: int, count: int):
         async with self.session_maker() as session:
             session: AsyncSession
             async with session.begin():
                 sql = update(Subscriptions).values({
                     Subscriptions.photo_generations: Subscriptions.photo_generations - count
+                }).where(or_(Subscriptions.id == subscription_id))
+                await session.execute(sql)
+                await session.commit()
+
+    async def use_video_generation(self, subscription_id: int, count: int):
+        async with self.session_maker() as session:
+            session: AsyncSession
+            async with session.begin():
+                sql = update(Subscriptions).values({
+                    Subscriptions.video_generations: Subscriptions.video_generations - count
                 }).where(or_(Subscriptions.id == subscription_id))
                 await session.execute(sql)
                 await session.commit()

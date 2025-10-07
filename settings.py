@@ -3,13 +3,17 @@ import locale
 import re
 import asyncio
 import traceback
+import types
 from os import getenv
 import pandas as pd
 import pytz
 from datetime import datetime
 
+from aiogram import Bot
+from aiogram.enums import ParseMode
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import Message
 from dotenv import load_dotenv, find_dotenv
 from loguru import logger
 
@@ -134,10 +138,11 @@ def initialize_logger():
     logger.level("YooKassaPAYMENT_SUCCES", no=60, color="<green>")
     logger.level("PROMO_ACTIVATED", no=60, color="<green>")
     logger.level("YooKassaError", no=65, color="<red>")
+    logger.level("Sora2Error", no=65, color="<red>")
 
     # Синк для ERROR_HANDLER, GPT_ERROR
     for lvl in ("START_BOT", "STOPPED", "ERROR_HANDLER", "SCHEDULER_ERROR", "SCHEDULER_INFO", "PROMO_ACTIVATED",
-                "GPT_ERROR", "YooKassaError", "YooKassaPAYMENT_SUCCES", "EXTEND_SUB_ERROR"):
+                "GPT_ERROR", "YooKassaError", "YooKassaPAYMENT_SUCCES", "EXTEND_SUB_ERROR", "Sora2Error"):
         logger.add(
             loguru_sink_wrapper,
             level=lvl,
@@ -573,3 +578,35 @@ async def on_shutdown(dispatcher):
     # Закрываем сессию
     await sora_client.close()
     logger.info("Sora клиент остановлен")
+
+
+async def send_initial(bot: Bot, chat_id: int) -> Message:
+    text = (
+        "⏳ *Генерация видео запущена*\n"
+        "_Ожидайте, это может занять от 2 до 10 минут…_"
+    )
+    msg = await bot.send_message(chat_id, text, parse_mode=ParseMode.MARKDOWN)
+    return msg
+
+def _split_ids(s: str) -> list[str]:
+    # "id1, id2, id3" -> ["id1","id2","id3"]
+    return [x.strip() for x in (s or "").split(",") if x.strip()]
+
+async def build_telegram_image_urls_from_ids(bot: Bot, ids: list[str]) -> list[str]:
+    urls: list[str] = []
+    for file_id in ids:
+        try:
+            f = await bot.get_file(file_id)  # -> aiogram.types.File
+            if not f or not f.file_path:
+                continue
+            # Формируем публичный URL к файлу на серверах Telegram:
+            url = f"https://api.telegram.org/file/bot{bot.token}/{f.file_path}"
+            # Фильтр по расширению под требования KIE (jpeg/png/webp):
+            if not f.file_path.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+                # при желании: логгировать, что формат отфильтрован
+                continue
+            urls.append(url)
+        except Exception as e:
+            # при желании: лог + continue
+            continue
+    return urls

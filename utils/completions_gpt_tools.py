@@ -36,7 +36,7 @@ from utils.create_notification import (
     NotificationTextTooLongError,
 )
 from utils.google_banano_generate import ResponseBlockedError, PromptBlockedError, TextRefusalError, \
-    NoImageInResponseError, InvalidPromptError, AuthError, TransientError, GeminiImageError
+    NoImageInResponseError, InvalidPromptError, AuthError, TransientError, GeminiImageError, RateLimitError
 from utils.gpt_images import AsyncOpenAIImageClient
 from utils.new_fitroom_api import FitroomClient
 from utils.parse_gpt_text import sanitize_with_links
@@ -458,6 +458,136 @@ async def dispatch_tool_call(tool_call, image_client, user_id: int, max_photo_ge
             logger.log("GPT_ERROR", traceback.format_exc())
             return []
 
+    from settings import _split_ids, build_telegram_image_urls_from_ids
+    image_urls: list[str] = []
+    if user.last_image_id:
+        bot = get_current_bot()
+        image_ids = _split_ids(user.last_image_id)
+        image_urls = await build_telegram_image_urls_from_ids(bot, image_ids)
+
+    if name == "generate_text_to_video":
+        from settings import logger, sora_client
+        from utils.sora_client import (
+            InsufficientCreditsError,
+            ContentPolicyError,
+            RateLimitError,
+            KieSora2Error
+        )
+
+        try:
+            kwargs: dict[str, Any] = {
+                "prompt": args["prompt"],
+                "aspect_ratio": args.get("aspect_ratio", "landscape"),
+                "quality": args.get("quality", "standard"),
+            }
+
+            logger.info(f"Запуск генерации видео: {args['prompt'][:100]}...")
+            result = await sora_client.text_to_video(**kwargs)
+            logger.info(f"Видео готово: {result}")
+            return result
+
+        except InsufficientCreditsError as e:
+            logger.error(f"Недостаточно кредитов: {e}")
+            return "К сожалению, на аккаунте закончились кредиты для генерации видео. Пожалуйста, свяжитесь с администратором для пополнения баланса."
+
+        except ContentPolicyError as e:
+            logger.error(f"Нарушение content policy: {e}")
+            return "Ваш запрос был отклонён системой безопасности. Пожалуйста, измените описание видео, убрав упоминания конкретных людей, знаменитостей или потенциально небезопасный контент, и попробуйте снова."
+
+        except RateLimitError as e:
+            logger.error(f"Rate limit превышен: {e}")
+            return "Слишком много запросов на генерацию видео. Пожалуйста, подождите 1-2 минуты и попробуйте снова."
+
+        except asyncio.TimeoutError:
+            logger.error("Таймаут генерации видео")
+            return "Генерация видео заняла слишком много времени (более 15 минут) и была прервана. Попробуйте упростить описание или выбрать качество 'standard' вместо 'hd'."
+
+        except KieSora2Error as e:
+            error_msg = str(e)
+            logger.error(f"Ошибка Sora API: {error_msg}")
+
+            if "Эндпоинт не найден" in error_msg:
+                return "Произошла техническая ошибка с API генерации видео. Сервис временно недоступен, попробуйте позже."
+            elif "Неверный API ключ" in error_msg:
+                return "Ошибка аутентификации с сервисом генерации видео. Пожалуйста, свяжитесь с администратором."
+            elif "Ошибка валидации" in error_msg:
+                return "Некорректные параметры запроса. Убедитесь, что описание видео не превышает 5000 символов."
+            elif "Сервис недоступен" in error_msg or "maintenance" in error_msg.lower():
+                return "Сервис генерации видео временно недоступен из-за технического обслуживания. Пожалуйста, попробуйте через 10-15 минут."
+            else:
+                return f"Не удалось сгенерировать видео: {error_msg}. Попробуйте изменить описание или повторить попытку позже."
+
+        except Exception as e:
+            logger.error(f"Неожиданная ошибка при генерации видео: {traceback.format_exc()}")
+            return "Произошла непредвиденная ошибка при генерации видео. Пожалуйста, попробуйте ещё раз через несколько минут или обратитесь в поддержку."
+
+
+    elif name == "generate_image_to_video":
+        from settings import logger, sora_client
+        from utils.sora_client import (
+            InsufficientCreditsError,
+            ContentPolicyError,
+            RateLimitError,
+            KieSora2Error
+        )
+
+        try:
+            if not args.get("image_provided"):
+                return "Для генерации видео из изображения необходимо прикрепить фото. Пожалуйста, отправьте изображение и повторите запрос."
+
+            # Здесь получаешь image_bytes из контекста
+            # image_bytes = await get_image_bytes_from_message(message)
+
+            kwargs: dict[str, Any] = {
+                "image": image_urls[0],
+                "prompt": args["prompt"],
+                "aspect_ratio": args.get("aspect_ratio", "landscape"),
+                "quality": args.get("quality", "standard"),
+            }
+
+            logger.info(f"Запуск генерации видео из изображения: {args['prompt'][:100]}...")
+            result = await sora_client.image_to_video(**kwargs)
+            logger.info(f"Видео готово: {result}")
+            return [result]
+
+        except InsufficientCreditsError as e:
+            logger.error(f"Недостаточно кредитов: {e}")
+            return "К сожалению, на аккаунте закончились кредиты для генерации видео. Пожалуйста, свяжитесь с администратором для пополнения баланса."
+
+        except ContentPolicyError as e:
+            logger.error(f"Нарушение content policy: {e}")
+            return "Ваше изображение или запрос были отклонены системой безопасности. Убедитесь, что на фото нет узнаваемых лиц знаменитостей или несовершеннолетних, и описание не содержит небезопасный контент."
+
+        except RateLimitError as e:
+            logger.error(f"Rate limit превышен: {e}")
+            return "Слишком много запросов на генерацию видео. Пожалуйста, подождите 1-2 минуты и попробуйте снова."
+
+        except asyncio.TimeoutError:
+            logger.error("Таймаут генерации видео")
+            return "Генерация видео заняла слишком много времени (более 15 минут) и была прервана. Попробуйте упростить описание анимации или выбрать качество 'standard' вместо 'hd'."
+
+        except KieSora2Error as e:
+            error_msg = str(e)
+            logger.error(f"Ошибка Sora API: {error_msg}")
+
+            if "Файл не найден" in error_msg:
+                return "Не удалось получить доступ к изображению. Пожалуйста, отправьте изображение заново."
+            elif "image должен быть" in error_msg:
+                return "Некорректный формат изображения. Пожалуйста, отправьте изображение в формате JPEG, PNG или WEBP размером до 10 МБ."
+            elif "Эндпоинт не найден" in error_msg:
+                return "Произошла техническая ошибка с API генерации видео. Сервис временно недоступен, попробуйте позже."
+            elif "Неверный API ключ" in error_msg:
+                return "Ошибка аутентификации с сервисом генерации видео. Пожалуйста, свяжитесь с администратором."
+            elif "Сервис недоступен" in error_msg or "maintenance" in error_msg.lower():
+                return "Сервис генерации видео временно недоступен из-за технического обслуживания. Пожалуйста, попробуйте через 10-15 минут."
+            else:
+                return f"Не удалось сгенерировать видео из изображения: {error_msg}. Попробуйте другое изображение или повторите попытку позже."
+
+        except Exception as e:
+            logger.error(f"Неожиданная ошибка при генерации видео из изображения: {traceback.format_exc()}")
+            return "Произошла непредвиденная ошибка при генерации видео. Пожалуйста, попробуйте ещё раз через несколько минут или обратитесь в поддержку."
+
+
     # if name == "fitting_clothes":
     #     fitroom_client = FitroomClient()
     #     cloth_type = (args.get("cloth_type") or "full").strip()
@@ -544,10 +674,11 @@ async def run_tools_and_followup_chat(
     tool_calls: List[dict],
     user_id: int,
     max_photo_generations: int,
-) -> Tuple[List[bytes], Optional[str], Optional[str], List[dict]]:
+) -> Tuple[List[bytes], Optional[str], Optional[str], List[dict], List[str]]:
     image_client = AsyncOpenAIImageClient()
     outputs_messages: List[dict] = []
     final_images: List[bytes] = []
+    video_urls: List[str] = []
     web_answer: Optional[str] = None
     notif_answer: Optional[str] = None
     images_counter = 0
@@ -565,14 +696,15 @@ async def run_tools_and_followup_chat(
     sub_types = await type_subscriptions_repository.select_all_type_subscriptions()
 
     delete_message = None
+    stop_event = None
+    task = None
     try:
         # Каждый tool_call исполняем ровно один раз
         for tc in tool_calls:
             fname = tc["function"]["name"]
             tool_id = tc.get("id") or ""
-
             # Проверки подписки/лимитов и индикаторы
-            if fname not in ("search_web", "add_notification"):
+            if fname not in ("search_web", "add_notification" ,"generate_text_to_video", "generate_image_to_video"):
                 if user_sub is None or (type_sub is not None and type_sub.plan_name == "Free"):
                     await main_bot.send_message(
                         chat_id=user.user_id,
@@ -638,6 +770,11 @@ async def run_tools_and_followup_chat(
                         text="🖌Начал настраивать напоминание...",
                         chat_id=user.user_id,
                     )
+                elif fname in ["generate_text_to_video", "generate_image_to_video"]:
+                    from settings import send_initial
+                    delete_message = await send_initial(main_bot, user_id)
+                    # stop_event = asyncio.Event()
+                    # task = asyncio.create_task(animate_spinner(main_bot, delete_message, stop_event))
 
             # Исполняем инструмент
             result = await dispatch_tool_call(
@@ -664,6 +801,27 @@ async def run_tools_and_followup_chat(
                     tool_call_id=tool_id,
                     name=fname,
                     content_obj={"text": notif_answer},
+                    outputs_messages=outputs_messages,
+                )
+                continue
+
+            if fname in ["generate_text_to_video", "generate_image_to_video"] and isinstance(result, list):
+                await _append_tool_message(
+                    user_id=user_id,
+                    tool_call_id=tool_id,
+                    name=fname,
+                    content_obj={"text": f"Generated vido url: {result[0]}"},
+                    outputs_messages=outputs_messages,
+                )
+                video_urls.extend(result)
+                continue
+
+            if fname in ["generate_text_to_video", "generate_image_to_video"] and isinstance(result, str):
+                await _append_tool_message(
+                    user_id=user_id,
+                    tool_call_id=tool_id,
+                    name=fname,
+                    content_obj={"text": result},
                     outputs_messages=outputs_messages,
                 )
                 continue
@@ -727,6 +885,10 @@ async def run_tools_and_followup_chat(
         from settings import logger
         logger.log("GPT_ERROR", traceback.format_exc())
     finally:
+        if stop_event:
+            stop_event.set()
+        if task:
+            await task
         if delete_message:
             try:
                 await delete_message.delete()
@@ -757,7 +919,7 @@ async def run_tools_and_followup_chat(
     outputs_messages = _filter_outputs_with_valid_tool_calls(messages, outputs_messages)
     # Конец вставки
 
-    return final_images, web_answer, notif_answer, outputs_messages
+    return final_images, web_answer, notif_answer, outputs_messages, video_urls
 
     # ВТОРОЙ вызов: финализируем ответ МОДЕЛИ
     # followup_messages = messages + outputs_messages
@@ -944,6 +1106,7 @@ class GPTCompletions:  # noqa: N801
             "text": None,
             "image_files": [],
             "files": [],
+            "video_urls": [],
             "audio_file": None,
             "reply_markup": None
         }
@@ -1040,7 +1203,7 @@ class GPTCompletions:  # noqa: N801
                     user_sub = await subscriptions_repository.get_active_subscription_by_user_id(user_id=user.user_id)
                     max_photo_generations = user_sub.photo_generations if user_sub else 0
                     try:
-                        final_images, web_answer, notif_answer, assistant_msgs = await run_tools_and_followup_chat(
+                        final_images, web_answer, notif_answer, assistant_msgs, video_urls = await run_tools_and_followup_chat(
                             client=self.client,
                             model=user.model_type,
                             messages=messages + [{"role": "assistant", "content": msg.content or None, "tool_calls": [tc.model_dump() for tc in tool_calls]}],
@@ -1054,6 +1217,22 @@ class GPTCompletions:  # noqa: N801
                         raise
                     # print(final_images)
                     # выдача пользователю
+                    if video_urls:
+                        # if user_sub:
+                        #     await subscriptions_repository.use_generation(subscription_id=user_sub.id,
+                        #                                                   count=len(final_images))
+                        ai_json = {
+                            "type": "ai",
+                            "content": "video_urls:" + ", ".join(video_urls),
+                            "tool_calls": [],
+                            "additional_kwargs": {},
+                            "response_metadata": {},
+                            "invalid_tool_calls": [],
+                        }
+                        await self.history.append(user_id=user_id, payload=ai_json)
+                        # final_content["text"] = final_text
+                        final_content["video_urls"] = video_urls
+                        return final_content
                     if web_answer:
                         final_text = sanitize_with_links(web_answer)
                         ai_json = {

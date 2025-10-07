@@ -20,6 +20,7 @@ class AiRequests(BaseModel, CleanModel):
     has_audio = Column(Boolean, nullable=True, default=False)
     audio_id = Column(String, nullable=True)
     generate_images = Column(Boolean, nullable=True , default=False)
+    generate_videos = Column(Boolean, nullable=True , default=False)
 
     @property
     def stats(self) -> str:

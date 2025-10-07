@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from aiogram import Router, F, Bot, types
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import any_state
-from aiogram.types import Message, CallbackQuery, BufferedInputFile, InputMediaPhoto
+from aiogram.types import Message, CallbackQuery, BufferedInputFile, InputMediaPhoto, URLInputFile
 from aiogram.utils.chat_action import ChatActionSender
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram_media_group import media_group_handler
@@ -42,10 +42,29 @@ async def process_ai_response(ai_response, message: Message, user_id: int, bot: 
     text = ai_response.get("text", "")
     image_files = ai_response.get("image_files", [])
     files = ai_response.get("files", [])
+    video_urls = ai_response.get("video_urls", [])
     audio_file = ai_response.get("audio_file")
     reply_markup: InlineKeyboardBuilder | None = ai_response.get("reply_markup", None)
     
     # Обработка файлов (документы, изображения от ассистента)
+    if video_urls:
+        for video_url in video_urls:
+            try:
+                video_file = URLInputFile(
+                    url=video_url,
+                    filename="sora_video.mp4"
+                )
+
+                await message.answer_document(
+                    document=video_file,
+                    caption="✅ Видео готово!"
+                )
+
+            except Exception as e:
+                from settings import logger
+                logger.log("ERROR_HANDLER", traceback.format_exc())
+        return
+
     if files:
         for file_data in files:
             try:
